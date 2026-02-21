@@ -250,10 +250,13 @@ async function main(): Promise<void> {
 
   // -- mcp: start MCP server over stdio ------------------------------------
 
+  let keepAlive = false;
+
   program
     .command("mcp")
     .description("Start the MCP server (stdio transport)")
     .action(async () => {
+      keepAlive = true;
       const { main: startMcpServer } = await import("../mcp/index.js");
       await startMcpServer();
     });
@@ -269,10 +272,15 @@ async function main(): Promise<void> {
     });
 
   await program.parseAsync(process.argv);
+  return keepAlive;
 }
 
-void main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(JSON.stringify({ error: message }));
-  process.exit(1);
-});
+void main()
+  .then((keepAlive) => {
+    if (!keepAlive) process.exit(0);
+  })
+  .catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(JSON.stringify({ error: message }));
+    process.exit(1);
+  });

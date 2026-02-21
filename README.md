@@ -1,4 +1,6 @@
-# agentic-browser
+# Agentic Browser
+
+[![](https://img.shields.io/npm/v/agentic-browser)](https://www.npmjs.com/package/agentic-browser) ![](https://github.com/ph1p/agentic-browser/actions/workflows/ci.yml/badge.svg) ![](https://github.com/ph1p/agentic-browser/actions/workflows/release.yml/badge.svg)
 
 CLI and MCP server to control a local Chrome session for AI agents.
 
@@ -17,7 +19,7 @@ CLI and MCP server to control a local Chrome session for AI agents.
 ## Install
 
 ```bash
-npm install agentic-browser
+npm install agentic-browser -g
 ```
 
 ## Build (Development)
