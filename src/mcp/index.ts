@@ -22,8 +22,6 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
-// --- Tools ---
-
 server.tool(
   "browser_start_session",
   "Start a Chrome browser session for web automation. Call this first before using any other browser tool. Returns a sessionId you'll need for all subsequent calls.",
@@ -183,8 +181,6 @@ server.tool(
     };
   },
 );
-
-// --- Startup ---
 
 export async function main() {
   const transport = new StdioServerTransport();

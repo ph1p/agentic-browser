@@ -24,7 +24,7 @@ import { runMemoryInspect } from "./commands/memory-inspect.js";
 import { runMemoryVerify } from "./commands/memory-verify.js";
 import { runMemoryStats } from "./commands/memory-stats.js";
 
-async function main(): Promise<void> {
+async function main() {
   const runtime = createCliRuntime();
   const program = new Command();
   program.name("agentic-browser").description("Agentic browser CLI");
@@ -155,8 +155,6 @@ async function main(): Promise<void> {
     console.log(JSON.stringify(result));
   });
 
-  // -- agent: stateful wrapper with auto-restart and retry ----------------
-
   const agent = program
     .command("agent")
     .description("Stateful agent wrapper with session persistence and auto-retry");
@@ -248,8 +246,6 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(result));
     });
 
-  // -- mcp: start MCP server over stdio ------------------------------------
-
   let keepAlive = false;
 
   program
@@ -260,8 +256,6 @@ async function main(): Promise<void> {
       const { main: startMcpServer } = await import("../mcp/index.js");
       await startMcpServer();
     });
-
-  // -- setup: configure MCP for AI tools -----------------------------------
 
   program
     .command("setup")
