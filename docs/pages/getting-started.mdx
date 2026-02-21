@@ -1,0 +1,126 @@
+# Getting Started
+
+## Prerequisites
+
+- **Node.js 20+**
+- **Chrome** installed (auto-discovered, or set `AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH`)
+
+## Install
+
+```bash
+npm install agentic-browser
+```
+
+## Quick Start: CLI
+
+Start a browser session, navigate to a page, discover elements, and read content:
+
+```bash
+# 1. Start Chrome
+agentic-browser agent start
+
+# 2. Navigate
+agentic-browser agent run navigate '{"url":"https://example.com"}'
+
+# 3. Discover what's on the page
+agentic-browser agent elements
+
+# 4. Click something using a discovered selector
+agentic-browser agent run interact '{"action":"click","selector":"a[href=\"/more\"]"}'
+
+# 5. Read page content
+agentic-browser agent content --mode text
+
+# 6. Done
+agentic-browser agent stop
+```
+
+Every command prints exactly one JSON line to stdout.
+
+## Quick Start: MCP Server
+
+If your AI tool supports [MCP](https://modelcontextprotocol.io), configure the stdio server instead of using CLI commands.
+
+### Automatic Setup
+
+```bash
+npx agentic-browser setup
+```
+
+Detects Claude Code, Cursor, and writes the config for you.
+
+### Manual: Claude Code
+
+Add to `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "agentic-browser": {
+      "command": "npx",
+      "args": ["agentic-browser", "mcp"]
+    }
+  }
+}
+```
+
+### Manual: Cursor
+
+Add to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "agentic-browser": {
+      "command": "npx",
+      "args": ["agentic-browser", "mcp"]
+    }
+  }
+}
+```
+
+Once configured, you'll see 7 browser tools available in your assistant:
+`browser_start_session`, `browser_navigate`, `browser_interact`, `browser_get_content`, `browser_get_elements`, `browser_search_memory`, `browser_stop_session`.
+
+## Quick Start: Programmatic API
+
+```ts
+import { createAgenticBrowserCore } from "agentic-browser";
+
+const core = createAgenticBrowserCore();
+const session = await core.startSession();
+
+// Navigate
+await core.runCommand({
+  sessionId: session.sessionId,
+  commandId: "nav-1",
+  type: "navigate",
+  payload: { url: "https://example.com" },
+});
+
+// Discover elements
+const elements = await core.getInteractiveElements({
+  sessionId: session.sessionId,
+  visibleOnly: true,
+  limit: 30,
+});
+
+console.log(elements.elements.map((e) => `${e.role}: ${e.text} → ${e.selector}`));
+
+// Clean up
+await core.stopSession(session.sessionId);
+```
+
+## Environment Variables
+
+| Variable                                 | Default            | Description                                 |
+| ---------------------------------------- | ------------------ | ------------------------------------------- |
+| `AGENTIC_BROWSER_LOG_DIR`                | `.agentic-browser` | Base directory for sessions, memory, events |
+| `AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH` | _(auto-discover)_  | Explicit path to Chrome executable          |
+
+## Next Steps
+
+- [CLI Reference](/cli) — full command documentation
+- [MCP Server](/mcp-server) — detailed MCP tool reference
+- [Element Discovery](/element-discovery) — how interactive elements are found
+- [Task Memory](/task-memory) — how the memory system works

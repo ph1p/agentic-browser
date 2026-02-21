@@ -1,0 +1,15 @@
+{
+  "$schema": "https://oxc.rs/schemas/oxlintrc.json",
+  "ignorePatterns": [
+    "dist/**",
+    "node_modules/**",
+    ".agentic-browser/**",
+    ".llm-browser/**",
+    ".codex/**",
+    "coverage/**"
+  ],
+  "rules": {
+    "correctness": "error",
+    "suspicious": "error"
+  }
+}

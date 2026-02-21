@@ -1,0 +1,137 @@
+# Task Memory
+
+The memory system learns from successful interactions and reuses proven patterns on repeat visits. Instead of rediscovering elements every time, an LLM can search memory for known selectors and workflows.
+
+## How It Works
+
+```
+Command executed
+    ↓
+Evidence recorded (success/failure + selector + URL)
+    ↓
+Grouped into TaskInsight (by taskIntent + siteDomain)
+    ↓
+Scored by confidence, freshness, and relevance
+    ↓
+Available via memory search
+```
+
+### Evidence
+
+Every command execution creates an evidence record:
+
+- **result** — `success` or `failure`
+- **selector** — CSS selector used (if any)
+- **url** — page URL at time of execution
+- **commandId** — which command produced this
+
+### TaskInsight
+
+Evidence is grouped into insights, each representing a learned pattern:
+
+- **taskIntent** — what was being done (e.g. `"navigate:github.com"`)
+- **siteDomain** — which site
+- **actionRecipe** — sequence of steps that worked
+- **selectorHints** — CSS selectors that proved reliable
+- **confidence** — success ratio (0-1)
+- **freshness** — how current the insight is
+
+## Freshness States
+
+Insights move through three freshness states:
+
+| State     | Meaning                            | Trigger                            |
+| --------- | ---------------------------------- | ---------------------------------- |
+| `fresh`   | Recently verified, high confidence | Successful use                     |
+| `suspect` | Showing failures or aging          | Failures or time decay             |
+| `stale`   | Old or unreliable                  | Repeated failures, long inactivity |
+
+The transition is automatic — successful executions refresh an insight, failures degrade it.
+
+## Usage
+
+### Search Memory
+
+Find relevant patterns before interacting with a site:
+
+```bash
+# CLI
+agentic-browser agent memory-search "login:github.com" --domain github.com --limit 5
+
+# Or low-level
+agentic-browser memory:search "login:github.com" --domain github.com
+```
+
+```ts
+// Programmatic
+const memory = core.searchMemory({
+  taskIntent: "login:github.com",
+  siteDomain: "github.com",
+  limit: 5,
+});
+```
+
+**MCP:** Call `browser_search_memory` with `taskIntent`.
+
+Results are ranked by:
+
+1. **Relevance** — fuzzy match on taskIntent
+2. **Confidence** — success/failure ratio
+3. **Freshness** — more recent is better
+4. **Domain match** — exact domain gets a bonus
+
+### Inspect an Insight
+
+See the full details of a specific insight:
+
+```bash
+agentic-browser memory:inspect <insightId>
+```
+
+```ts
+const insight = core.inspectMemory("insight-abc");
+// insight.actionRecipe — step-by-step what worked
+// insight.evidence — all recorded executions
+// insight.confidence, insight.freshness
+```
+
+### Verify an Insight
+
+Mark an insight as manually verified (resets stale counter):
+
+```bash
+agentic-browser memory:verify <insightId>
+```
+
+```ts
+core.verifyMemory("insight-abc");
+```
+
+### Memory Statistics
+
+```bash
+agentic-browser memory:stats
+```
+
+```ts
+const stats = core.memoryStats();
+// stats.total — total insights
+// stats.fresh — currently fresh
+// stats.suspect — needs attention
+// stats.stale — unreliable
+// stats.topDomains — most-used sites
+```
+
+## Recommended Workflow
+
+For an LLM working with a known site:
+
+1. **Search first:** `memory-search "task:domain.com"` — check if there are known patterns
+2. **Use selector hints:** If memory returns results with high confidence and fresh status, use the `selectorHints` directly
+3. **Fall back to discovery:** If no memory or stale results, use `elements` to discover fresh selectors
+4. **Let memory record:** Successful executions are automatically recorded — no manual step needed
+5. **Verify when needed:** If a site redesign breaks selectors, the freshness system will detect it and degrade the insight
+
+## Storage
+
+Memory is persisted as JSON in `{AGENTIC_BROWSER_LOG_DIR}/memory/insights.json`. It survives across sessions and process restarts.

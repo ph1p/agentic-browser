@@ -1,0 +1,147 @@
+# Element Discovery
+
+LLMs need to know what's on a page before they can interact with it. The element discovery system scans the DOM and returns a structured list of all interactive elements with CSS selectors you can use directly.
+
+## Why?
+
+Without element discovery, an LLM has to:
+
+- Guess CSS selectors (fragile, often wrong)
+- Parse raw HTML (noisy, token-expensive)
+- Rely on memory from previous sessions (stale if the site changed)
+
+With `getInteractiveElements()`, the LLM gets a clean list of what's actually there — buttons, links, inputs, and their exact selectors.
+
+## Usage
+
+### CLI
+
+```bash
+agentic-browser agent elements
+agentic-browser agent elements --roles button,link,input --limit 20
+agentic-browser agent elements --selector "#main-content" --visible-only
+```
+
+### MCP
+
+Call `browser_get_elements` with optional filters.
+
+### Programmatic
+
+```ts
+const result = await core.getInteractiveElements({
+  sessionId: session.sessionId,
+  roles: ["button", "link"], // optional
+  visibleOnly: true, // default: true
+  limit: 50, // default: 50
+  selector: "#content", // optional: scope to subtree
+});
+```
+
+## Output Structure
+
+```json
+{
+  "elements": [
+    {
+      "selector": "#login-btn",
+      "role": "button",
+      "tagName": "button",
+      "text": "Sign In",
+      "actions": ["click"],
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "selector": "input[name=\"email\"]",
+      "role": "input",
+      "tagName": "input",
+      "text": "",
+      "actions": ["click", "type", "press"],
+      "visible": true,
+      "enabled": true,
+      "inputType": "email",
+      "placeholder": "Enter your email"
+    },
+    {
+      "selector": "a[href=\"/docs\"]",
+      "role": "link",
+      "tagName": "a",
+      "text": "Documentation",
+      "actions": ["click"],
+      "visible": true,
+      "enabled": true,
+      "href": "/docs"
+    }
+  ],
+  "totalFound": 87,
+  "truncated": true
+}
+```
+
+## What Gets Detected
+
+The scanner finds elements matching these selectors:
+
+- `a[href]` — links
+- `button` — buttons
+- `input:not([type="hidden"])` — inputs (excluding hidden)
+- `select` — dropdowns
+- `textarea` — text areas
+- `[role="button"]`, `[role="link"]`, `[role="checkbox"]`, `[role="radio"]`, `[role="menuitem"]`, `[role="tab"]`, `[role="switch"]` — ARIA roles
+- `[onclick]`, `[tabindex]` — event handlers
+- `[contenteditable="true"]` — editable regions
+
+Duplicate elements (e.g. `<button role="button">`) are deduplicated automatically.
+
+## Selector Generation
+
+Each element gets a unique CSS selector, generated with this priority:
+
+1. **`#id`** — if the element has an `id` attribute
+2. **`tag[name="..."]`** — if `name` is unique
+3. **`[data-testid="..."]`** — if present
+4. **`tag[aria-label="..."]`** — if unique
+5. **Composite path** — `div > ul > li:nth-of-type(3) > button` (always works)
+
+The generated selectors are designed to be stable and usable directly with the `interact` command.
+
+## Roles and Actions
+
+| Role              | Typical Tags                                  | Default Actions    |
+| ----------------- | --------------------------------------------- | ------------------ |
+| `link`            | `a[href]`                                     | click              |
+| `button`          | `button`, `[role="button"]`                   | click              |
+| `input`           | `input`                                       | click, type, press |
+| `select`          | `select`                                      | click, select      |
+| `textarea`        | `textarea`                                    | click, type, press |
+| `checkbox`        | `input[type="checkbox"]`, `[role="checkbox"]` | toggle             |
+| `radio`           | `input[type="radio"]`, `[role="radio"]`       | toggle             |
+| `contenteditable` | `[contenteditable]`                           | click, type        |
+| `custom`          | `[onclick]`, `[tabindex]`                     | click              |
+
+## Visibility Check
+
+Elements are checked for visibility using:
+
+- `getComputedStyle()` — `display: none`, `visibility: hidden`, `opacity: 0`
+- `getBoundingClientRect()` — zero width/height
+
+Set `visibleOnly: false` to include hidden elements (useful for debugging).
+
+## Using Discovered Selectors
+
+The typical workflow:
+
+```bash
+# 1. See what's on the page
+agentic-browser agent elements --roles button,link
+
+# 2. Use a selector from the result
+agentic-browser agent run interact '{"action":"click","selector":"#login-btn"}'
+
+# 3. After navigation, discover again
+agentic-browser agent elements
+```
+
+The selectors returned by element discovery are guaranteed to match exactly one element on the page at the time of discovery.

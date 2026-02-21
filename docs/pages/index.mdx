@@ -1,0 +1,56 @@
+# agentic-browser
+
+Browser automation for AI agents. Control Chrome via the DevTools Protocol from your AI coding assistant, CLI, or TypeScript code.
+
+## Three Ways to Use It
+
+### MCP Server (Recommended)
+
+Configure `agentic-browser mcp` as an MCP server in your AI tool. No shell commands needed — tools appear directly in your assistant.
+
+```json
+{
+  "mcpServers": {
+    "agentic-browser": {
+      "command": "npx",
+      "args": ["agentic-browser", "mcp"]
+    }
+  }
+}
+```
+
+### CLI
+
+Shell out to the `agentic-browser` CLI for stateful browser automation with auto-restart and retry:
+
+```bash
+agentic-browser agent start
+agentic-browser agent run navigate '{"url":"https://example.com"}'
+agentic-browser agent elements
+agentic-browser agent content --mode text
+agentic-browser agent stop
+```
+
+### Programmatic API
+
+Import `AgenticBrowserCore` directly in your TypeScript code:
+
+```ts
+import { createAgenticBrowserCore } from "agentic-browser";
+
+const core = createAgenticBrowserCore();
+const session = await core.startSession();
+await core.runCommand({
+  sessionId: session.sessionId,
+  commandId: "nav-1",
+  type: "navigate",
+  payload: { url: "https://example.com" },
+});
+```
+
+## Next Steps
+
+- [Getting Started](/getting-started) — install and run your first session
+- [MCP Server](/mcp-server) — configure for Claude Code, Cursor, and other MCP clients
+- [CLI Reference](/cli) — all available commands
+- [Programmatic API](/programmatic-api) — TypeScript API reference

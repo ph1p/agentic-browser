@@ -1,0 +1,188 @@
+# CLI Reference
+
+## Agent Commands (Recommended)
+
+The `agent` subcommand manages session state automatically — it persists the active session, auto-restarts on disconnect, generates command IDs, and retries failed commands.
+
+| Command                        | Description                            |
+| ------------------------------ | -------------------------------------- |
+| `agent start`                  | Start a Chrome session                 |
+| `agent status`                 | Show current session status            |
+| `agent run <type> <payload>`   | Execute a command (navigate, interact) |
+| `agent content [options]`      | Get page content                       |
+| `agent elements [options]`     | Discover interactive elements          |
+| `agent memory-search <intent>` | Search task memory                     |
+| `agent stop`                   | Stop the session                       |
+| `agent cleanup`                | Remove old session data                |
+
+### Navigate
+
+```bash
+agentic-browser agent run navigate '{"url":"https://example.com"}'
+```
+
+### Interact
+
+```bash
+# Click
+agentic-browser agent run interact '{"action":"click","selector":"#login-btn"}'
+
+# Type into an input
+agentic-browser agent run interact '{"action":"type","selector":"input[name=q]","text":"search query"}'
+
+# Press a key
+agentic-browser agent run interact '{"action":"press","key":"Enter"}'
+
+# Wait for an element to appear
+agentic-browser agent run interact '{"action":"waitFor","selector":"#results","timeoutMs":5000}'
+```
+
+### Get Content
+
+```bash
+# Page title
+agentic-browser agent content --mode title
+
+# Readable text
+agentic-browser agent content --mode text
+
+# Raw HTML of a specific element
+agentic-browser agent content --mode html --selector main
+```
+
+### Discover Elements
+
+```bash
+# All interactive elements
+agentic-browser agent elements
+
+# Filter by role
+agentic-browser agent elements --roles button,link,input
+
+# Limit results and scope to a container
+agentic-browser agent elements --limit 20 --selector "#main-content"
+
+# Only visible elements (default: true)
+agentic-browser agent elements --visible-only
+```
+
+### Search Memory
+
+```bash
+agentic-browser agent memory-search "login:github.com" --domain github.com --limit 5
+```
+
+### Cleanup
+
+```bash
+# Preview what would be deleted
+agentic-browser agent cleanup --dry-run --max-age-days 7
+
+# Actually clean up
+agentic-browser agent cleanup --max-age-days 7
+```
+
+## Low-Level Commands
+
+For direct control without session state management. You manage session IDs and command IDs yourself.
+
+### Session Lifecycle
+
+```bash
+# Start
+agentic-browser session:start
+
+# Status
+agentic-browser session:status <sessionId>
+
+# Restart
+agentic-browser session:restart <sessionId>
+
+# Stop
+agentic-browser session:stop <sessionId>
+
+# Rotate auth token
+agentic-browser session:auth <sessionId>
+
+# Cleanup old sessions
+agentic-browser session:cleanup --max-age-days 7
+```
+
+### Commands
+
+```bash
+agentic-browser command:run <sessionId> <commandId> <type> <payloadJson>
+
+# Examples
+agentic-browser command:run $SID cmd-1 navigate '{"url":"https://example.com"}'
+agentic-browser command:run $SID cmd-2 interact '{"action":"click","selector":"#btn"}'
+```
+
+### Page Content
+
+```bash
+agentic-browser page:content <sessionId> --mode text
+agentic-browser page:content <sessionId> --mode html --selector main
+agentic-browser page:content <sessionId> --mode title
+```
+
+### Memory
+
+```bash
+agentic-browser memory:search "navigate:example.com" --domain example.com --limit 5
+agentic-browser memory:inspect <insightId>
+agentic-browser memory:verify <insightId>
+agentic-browser memory:stats
+```
+
+## Output Format
+
+All commands print exactly **one JSON line** to `stdout`. Use exit code `0` for success, `1` for failure.
+
+```json
+{
+  "ok": true,
+  "action": "run",
+  "commandId": "cmd-1",
+  "sessionId": "abc-123",
+  "type": "navigate",
+  "payload": { "url": "https://example.com" },
+  "submittedAt": "2025-01-01T00:00:00.000Z",
+  "completedAt": "2025-01-01T00:00:01.000Z",
+  "resultStatus": "success",
+  "resultMessage": "Navigated to https://example.com"
+}
+```
+
+## Infrastructure Commands
+
+### Setup
+
+Configure agentic-browser as an MCP server for your AI tool:
+
+```bash
+# Interactive — detects Claude Code, Cursor, and prompts you to choose
+agentic-browser setup
+```
+
+The command finds supported AI tools in your project, then writes the MCP server entry into the appropriate config file (`.mcp.json`, `.cursor/mcp.json`).
+
+### MCP Server
+
+Start the MCP server directly (used by AI tools, not typically called manually):
+
+```bash
+agentic-browser mcp
+```
+
+Runs the stdio-based MCP server. This is what AI tools invoke when you configure the MCP integration via `setup` or manual config.
+
+## Recommended Workflow
+
+1. `agent start` — launch Chrome
+2. `agent run navigate` — go to target page
+3. `agent elements` — discover what's clickable
+4. `agent run interact` — use discovered selectors
+5. `agent content` — read page content to verify
+6. `agent memory-search` — on repeat visits, reuse known selectors
+7. `agent stop` — terminate when done

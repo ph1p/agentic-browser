@@ -1,0 +1,9 @@
+src/
+tests/
+specs/
+.codex/
+coverage/
+.vscode/
+.idea/
+*.log
+.env*

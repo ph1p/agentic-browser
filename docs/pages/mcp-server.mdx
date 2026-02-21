@@ -1,0 +1,176 @@
+# MCP Server
+
+The MCP (Model Context Protocol) server exposes agentic-browser as native tools in AI coding assistants. Instead of shelling out to CLI commands, the assistant calls structured tools directly — no JSON parsing, no shell escaping, no subprocess overhead.
+
+## Setup
+
+### Automatic
+
+```bash
+npx agentic-browser setup
+```
+
+Detects Claude Code and Cursor, then writes the config for you.
+
+### Manual: Claude Code
+
+Add to `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "agentic-browser": {
+      "command": "npx",
+      "args": ["agentic-browser", "mcp"]
+    }
+  }
+}
+```
+
+### Manual: Cursor
+
+Add to `.cursor/mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "agentic-browser": {
+      "command": "npx",
+      "args": ["agentic-browser", "mcp"]
+    }
+  }
+}
+```
+
+### Other MCP Clients
+
+Any MCP-compatible client can connect via stdio transport:
+
+```bash
+npx agentic-browser mcp
+```
+
+The server communicates over stdin/stdout using the MCP JSON-RPC protocol.
+
+## Tools
+
+### `browser_start_session`
+
+Start a Chrome browser session. Call this first before any other browser tool.
+
+**Parameters:** None
+
+**Returns:** Session object with `sessionId`, `status`, `startedAt`.
+
+---
+
+### `browser_navigate`
+
+Navigate the browser to a URL.
+
+| Parameter   | Type   | Required | Description                    |
+| ----------- | ------ | -------- | ------------------------------ |
+| `url`       | string | Yes      | The URL to navigate to         |
+| `sessionId` | string | No       | Uses active session if omitted |
+
+---
+
+### `browser_interact`
+
+Interact with a page element.
+
+| Parameter   | Type                                              | Required | Description                                       |
+| ----------- | ------------------------------------------------- | -------- | ------------------------------------------------- |
+| `action`    | `"click"` \| `"type"` \| `"press"` \| `"waitFor"` | Yes      | Interaction type                                  |
+| `selector`  | string                                            | No       | CSS selector for the target element               |
+| `text`      | string                                            | No       | Text to type (for `type` action)                  |
+| `key`       | string                                            | No       | Key to press (for `press` action, e.g. `"Enter"`) |
+| `timeoutMs` | number                                            | No       | Timeout in ms (for `waitFor` action)              |
+| `sessionId` | string                                            | No       | Uses active session if omitted                    |
+
+---
+
+### `browser_get_content`
+
+Get the current page content.
+
+| Parameter   | Type                              | Required | Default  | Description                    |
+| ----------- | --------------------------------- | -------- | -------- | ------------------------------ |
+| `mode`      | `"title"` \| `"text"` \| `"html"` | No       | `"text"` | Extraction mode                |
+| `selector`  | string                            | No       |          | CSS selector to scope content  |
+| `sessionId` | string                            | No       |          | Uses active session if omitted |
+
+---
+
+### `browser_get_elements`
+
+Discover interactive elements on the page. Returns CSS selectors usable with `browser_interact`.
+
+| Parameter     | Type     | Required | Default | Description                                                                                                                 |
+| ------------- | -------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `roles`       | string[] | No       | all     | Filter: `"link"`, `"button"`, `"input"`, `"select"`, `"textarea"`, `"checkbox"`, `"radio"`, `"contenteditable"`, `"custom"` |
+| `visibleOnly` | boolean  | No       | `true`  | Only visible elements                                                                                                       |
+| `limit`       | number   | No       | `50`    | Max elements to return                                                                                                      |
+| `selector`    | string   | No       |         | Scope to a subtree                                                                                                          |
+| `sessionId`   | string   | No       |         | Uses active session if omitted                                                                                              |
+
+**Returns:**
+
+```json
+{
+  "elements": [
+    {
+      "selector": "#login-btn",
+      "role": "button",
+      "tagName": "button",
+      "text": "Login",
+      "actions": ["click"],
+      "visible": true,
+      "enabled": true
+    }
+  ],
+  "totalFound": 42,
+  "truncated": true
+}
+```
+
+---
+
+### `browser_search_memory`
+
+Search task memory for previously learned selectors and patterns.
+
+| Parameter    | Type   | Required | Default | Description                                    |
+| ------------ | ------ | -------- | ------- | ---------------------------------------------- |
+| `taskIntent` | string | Yes      |         | What you want to do, e.g. `"login:github.com"` |
+| `siteDomain` | string | No       |         | Domain to scope search                         |
+| `limit`      | number | No       | `5`     | Max results                                    |
+
+---
+
+### `browser_stop_session`
+
+Stop the browser session and terminate Chrome.
+
+| Parameter   | Type   | Required | Description                    |
+| ----------- | ------ | -------- | ------------------------------ |
+| `sessionId` | string | No       | Uses active session if omitted |
+
+## Session Management
+
+The MCP server tracks a single active session. When you call `browser_start_session`, the returned `sessionId` becomes the active session. All subsequent tool calls use it automatically unless you pass a specific `sessionId`.
+
+When the MCP client disconnects, the server automatically cleans up any active session.
+
+## Example Workflow
+
+A typical sequence an AI assistant would use:
+
+1. `browser_start_session` — launch Chrome
+2. `browser_navigate` with `url: "https://github.com/login"`
+3. `browser_get_elements` — see what's on the page
+4. `browser_interact` with `action: "type"`, `selector: "input[name=login]"`, `text: "username"`
+5. `browser_interact` with `action: "type"`, `selector: "input[name=password]"`, `text: "***"`
+6. `browser_interact` with `action: "click"`, `selector: "input[type=submit]"`
+7. `browser_get_content` with `mode: "text"` — verify login worked
+8. `browser_stop_session` — done

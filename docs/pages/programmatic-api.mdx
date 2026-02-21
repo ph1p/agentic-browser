@@ -1,0 +1,212 @@
+# Programmatic API
+
+Use `AgenticBrowserCore` to integrate browser automation directly in TypeScript code.
+
+## Create an Instance
+
+```ts
+import { createAgenticBrowserCore } from "agentic-browser";
+
+// Production: launches real Chrome
+const core = createAgenticBrowserCore();
+
+// Testing: uses mock browser controller
+import { createMockAgenticBrowserCore } from "agentic-browser";
+const mockCore = createMockAgenticBrowserCore(process.env);
+```
+
+### Options
+
+```ts
+const core = createAgenticBrowserCore({
+  env: process.env, // custom env vars
+  browserController: myCtrl, // custom BrowserController implementation
+});
+```
+
+## Session Lifecycle
+
+```ts
+// Start a session
+const session = await core.startSession();
+// session.sessionId, session.status ("ready"), session.startedAt
+
+// Get session status
+const status = core.getSession(session.sessionId);
+
+// Restart (new Chrome, same session ID)
+await core.restartSession(session.sessionId);
+
+// Stop and terminate Chrome
+await core.stopSession(session.sessionId);
+```
+
+## Run Commands
+
+```ts
+const result = await core.runCommand({
+  sessionId: session.sessionId,
+  commandId: "cmd-1", // unique per command
+  type: "navigate", // "navigate" | "interact" | "restart" | "terminate"
+  payload: { url: "https://example.com" },
+});
+// result.resultStatus: "success" | "failed" | "timed_out"
+// result.resultMessage: human-readable description
+```
+
+### Interact Payloads
+
+```ts
+// Click
+{ action: "click", selector: "#btn" }
+
+// Type text
+{ action: "type", selector: "input[name=q]", text: "search query" }
+
+// Press key
+{ action: "press", key: "Enter" }
+
+// Wait for element
+{ action: "waitFor", selector: "#results", timeoutMs: 5000 }
+
+// Evaluate JavaScript
+{ action: "evaluate", text: "document.title" }
+```
+
+## Get Page Content
+
+```ts
+const content = await core.getPageContent({
+  sessionId: session.sessionId,
+  mode: "text", // "title" | "text" | "html"
+  selector: "main", // optional: scope to element
+});
+```
+
+## Discover Interactive Elements
+
+```ts
+const result = await core.getInteractiveElements({
+  sessionId: session.sessionId,
+  roles: ["button", "link", "input"], // optional filter
+  visibleOnly: true, // default: true
+  limit: 50, // default: 50
+  selector: "#main-content", // optional scope
+});
+
+// result.elements — InteractiveElement[]
+// result.totalFound — total before limit
+// result.truncated — true if capped
+
+for (const el of result.elements) {
+  console.log(`${el.role}: ${el.text} → ${el.selector}`);
+  // el.actions: ["click"] | ["click", "type", "press"] | ...
+  // el.visible, el.enabled
+  // el.href (links), el.inputType (inputs)
+  // el.ariaLabel, el.placeholder
+}
+```
+
+## Task Memory
+
+```ts
+// Search for known patterns
+const memory = core.searchMemory({
+  taskIntent: "login:github.com",
+  siteDomain: "github.com",
+  limit: 5,
+});
+// memory.results[0].selectorHints — CSS selectors that worked before
+
+// Inspect a specific insight
+const insight = core.inspectMemory("insight-abc");
+
+// Mark an insight as verified
+const verified = core.verifyMemory("insight-abc");
+
+// Memory statistics
+const stats = core.memoryStats();
+// stats.total, stats.fresh, stats.suspect, stats.stale, stats.topDomains
+```
+
+## Type Exports
+
+```ts
+import type {
+  InteractiveElement,
+  InteractiveElementRole,
+  InteractiveElementsOptions,
+  InteractiveElementsResult,
+  ElementAction,
+  ExecuteCommandInput,
+  AgenticBrowserCoreOptions,
+} from "agentic-browser";
+```
+
+### `InteractiveElement`
+
+```ts
+interface InteractiveElement {
+  selector: string; // CSS selector for interact()
+  role: InteractiveElementRole; // "button" | "link" | "input" | ...
+  tagName: string; // "button", "a", "input", ...
+  text: string; // visible label (max 80 chars)
+  actions: ElementAction[]; // ["click"] | ["click", "type", "press"]
+  visible: boolean;
+  enabled: boolean;
+  href?: string; // for links
+  inputType?: string; // for inputs ("text", "email", ...)
+  ariaLabel?: string;
+  placeholder?: string;
+}
+```
+
+### `InteractiveElementRole`
+
+```ts
+type InteractiveElementRole =
+  | "link"
+  | "button"
+  | "input"
+  | "select"
+  | "textarea"
+  | "checkbox"
+  | "radio"
+  | "contenteditable"
+  | "custom";
+```
+
+### `ElementAction`
+
+```ts
+type ElementAction = "click" | "type" | "select" | "toggle" | "press";
+```
+
+## Testing
+
+Use `createMockAgenticBrowserCore` for tests — it uses a mock browser controller that returns fixed responses without launching Chrome.
+
+```ts
+import { describe, expect, it } from "vitest";
+import { createMockAgenticBrowserCore } from "agentic-browser";
+
+describe("my automation", () => {
+  it("navigates and reads content", async () => {
+    const core = createMockAgenticBrowserCore({
+      ...process.env,
+      AGENTIC_BROWSER_LOG_DIR: `/tmp/test-${Math.random().toString(16).slice(2)}`,
+    });
+
+    const session = await core.startSession();
+    const nav = await core.runCommand({
+      sessionId: session.sessionId,
+      commandId: "nav-1",
+      type: "navigate",
+      payload: { url: "https://example.com" },
+    });
+
+    expect(nav.resultStatus).toBe("success");
+    await core.stopSession(session.sessionId);
+  });
+});
+```
