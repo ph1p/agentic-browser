@@ -33,7 +33,9 @@ async function main() {
     .command("session:start")
     .option("--cdp-url <url>", "connect to existing Chrome via CDP endpoint URL")
     .option("--user-profile <path>", "use 'default' for system Chrome profile or an absolute path")
-    .action(async (options: { cdpUrl?: string; userProfile?: string }) => {
+    .option("--headless", "run Chrome in headless mode (no visible window)")
+    .option("--user-agent <string>", "override the browser user-agent string")
+    .action(async (options: { cdpUrl?: string; userProfile?: string; headless?: boolean; userAgent?: string }) => {
       if (options.cdpUrl) {
         runtime.context.config.cdpUrl = options.cdpUrl;
       }
@@ -42,6 +44,12 @@ async function main() {
           options.userProfile === "true" || options.userProfile === "default"
             ? "default"
             : options.userProfile;
+      }
+      if (options.headless) {
+        runtime.context.config.headless = true;
+      }
+      if (options.userAgent) {
+        runtime.context.config.userAgent = options.userAgent;
       }
       const result = await runSessionStart(runtime, { browser: "chrome" });
       console.log(JSON.stringify(result));
@@ -176,7 +184,9 @@ async function main() {
     .command("start")
     .option("--cdp-url <url>", "connect to existing Chrome via CDP endpoint URL")
     .option("--user-profile <path>", "use 'default' for system Chrome profile or an absolute path")
-    .action(async (options: { cdpUrl?: string; userProfile?: string }) => {
+    .option("--headless", "run Chrome in headless mode (no visible window)")
+    .option("--user-agent <string>", "override the browser user-agent string")
+    .action(async (options: { cdpUrl?: string; userProfile?: string; headless?: boolean; userAgent?: string }) => {
       if (options.cdpUrl) {
         runtime.context.config.cdpUrl = options.cdpUrl;
       }
@@ -185,6 +195,12 @@ async function main() {
           options.userProfile === "true" || options.userProfile === "default"
             ? "default"
             : options.userProfile;
+      }
+      if (options.headless) {
+        runtime.context.config.headless = true;
+      }
+      if (options.userAgent) {
+        runtime.context.config.userAgent = options.userAgent;
       }
       const result = await agentStart(runtime);
       console.log(JSON.stringify(result));

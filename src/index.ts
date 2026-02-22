@@ -12,4 +12,5 @@ export type {
   InteractiveElementsOptions,
   InteractiveElementsResult,
   ElementAction,
+  LaunchOptions,
 } from "./session/browser-controller.js";

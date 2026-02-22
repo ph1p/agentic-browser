@@ -69,13 +69,19 @@ export interface InteractiveElementsResult {
   truncated: boolean;
 }
 
+export interface LaunchOptions {
+  executablePath?: string;
+  userProfileDir?: string;
+  headless?: boolean;
+  userAgent?: string;
+}
+
 export interface BrowserController {
   launch(
     sessionId: string,
-    executablePath?: string,
-    userProfileDir?: string,
+    options?: LaunchOptions,
   ): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }>;
-  connect(cdpUrl: string): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }>;
+  connect(cdpUrl: string, options?: { userAgent?: string }): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }>;
   navigate(targetWsUrl: string, url: string): Promise<string>;
   interact(targetWsUrl: string, payload: InteractPayload): Promise<string>;
   getContent(targetWsUrl: string, options: PageContentOptions): Promise<PageContentResult>;
@@ -192,14 +198,39 @@ async function getJson<T>(url: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** Check if the debug port is accepting TCP connections (faster than an HTTP fetch). */
+function probePort(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
+
 async function waitForDebugger(port: number): Promise<void> {
-  for (let i = 0; i < 60; i += 1) {
-    try {
-      await getJson(`http://127.0.0.1:${port}/json/version`);
-      return;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+  const maxMs = 15000;
+  const start = Date.now();
+  let delay = 50; // exponential backoff: 50 → 100 → 200 → 250 (capped)
+
+  while (Date.now() - start < maxMs) {
+    // Quick TCP probe first — much cheaper than an HTTP round-trip.
+    if (await probePort(port)) {
+      // Port is open; confirm the HTTP endpoint is actually responding.
+      try {
+        await getJson(`http://127.0.0.1:${port}/json/version`);
+        return;
+      } catch {
+        // Port open but HTTP not ready yet — keep waiting.
+      }
     }
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    delay = Math.min(delay * 2, 250);
   }
   throw new Error("Chrome debug endpoint did not become ready in time");
 }
@@ -238,6 +269,16 @@ async function createTarget(cdpUrl: string, url = "about:blank"): Promise<string
     }
   }
   return await ensurePageWebSocketUrl(cdpUrl);
+}
+
+async function applyUserAgent(targetWsUrl: string, userAgent: string): Promise<void> {
+  const conn = await CdpConnection.connect(targetWsUrl);
+  try {
+    await conn.send("Network.enable");
+    await conn.send("Network.setUserAgentOverride", { userAgent });
+  } finally {
+    conn.close();
+  }
 }
 
 async function evaluateExpression<T>(targetWsUrl: string, expression: string): Promise<T> {
@@ -330,7 +371,7 @@ export class ChromeCdpBrowserController implements BrowserController {
     this.dropConnection(targetWsUrl);
   }
 
-  async connect(cdpUrl: string): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
+  async connect(cdpUrl: string, options?: { userAgent?: string }): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
     const parsed = new URL(cdpUrl);
     const port = Number.parseInt(parsed.port, 10);
     if (!port) {
@@ -339,6 +380,9 @@ export class ChromeCdpBrowserController implements BrowserController {
     await waitForDebugger(port);
     const targetWsUrl = await createTarget(cdpUrl);
     await evaluateExpression(targetWsUrl, "window.location.href");
+    if (options?.userAgent) {
+      await applyUserAgent(targetWsUrl, options.userAgent);
+    }
     return { pid: 0, cdpUrl, targetWsUrl };
   }
 
@@ -359,9 +403,9 @@ export class ChromeCdpBrowserController implements BrowserController {
 
   async launch(
     sessionId: string,
-    explicitPath?: string,
-    userProfileDir?: string,
+    options?: LaunchOptions,
   ): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
+    const { executablePath: explicitPath, userProfileDir, headless, userAgent } = options ?? {};
     const executablePath = discoverChrome(explicitPath);
     const extension = loadControlExtension();
     let profileDir: string;
@@ -384,11 +428,15 @@ export class ChromeCdpBrowserController implements BrowserController {
       );
     }
 
-    const launchAttempts: Array<{ withExtension: boolean; headless: boolean }> = [
-      { withExtension: true, headless: false },
-      { withExtension: false, headless: false },
-      { withExtension: false, headless: true },
-    ];
+    const launchAttempts: Array<{ withExtension: boolean; headless: boolean }> = headless
+      ? [
+          { withExtension: false, headless: true },
+        ]
+      : [
+          { withExtension: true, headless: false },
+          { withExtension: false, headless: false },
+          { withExtension: false, headless: true },
+        ];
 
     let lastError: Error | undefined;
 
@@ -428,6 +476,9 @@ export class ChromeCdpBrowserController implements BrowserController {
         if (!child.pid) {
           throw new Error("Failed to launch Chrome process");
         }
+        if (userAgent) {
+          await applyUserAgent(targetWsUrl, userAgent);
+        }
         return { pid: child.pid, cdpUrl, targetWsUrl };
       } catch (error) {
         lastError = error as Error;
@@ -444,51 +495,49 @@ export class ChromeCdpBrowserController implements BrowserController {
     throw new Error(lastError?.message ?? "Unable to launch Chrome");
   }
 
-  async navigate(targetWsUrl: string, url: string): Promise<string> {
+  /** Execute fn with a pooled connection; on failure drop connection and retry once. */
+  private async withRetry<T>(
+    targetWsUrl: string,
+    fn: (conn: CdpClient) => Promise<T>,
+  ): Promise<T> {
     let conn = await this.getConnection(targetWsUrl);
     try {
-      await this.ensureEnabled(targetWsUrl);
-      const loadPromise = Promise.race([
-        conn.waitForEvent("Page.loadEventFired", 6000),
-        conn.waitForEvent("Page.frameStoppedLoading", 6000),
-      ]);
-      await conn.send("Page.navigate", { url });
-      try {
-        await loadPromise;
-      } catch {
-        // fall back to reading location below
-      }
-      const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
-        expression: "window.location.href",
-        returnByValue: true,
-      });
-      return result.result.value ?? url;
+      return await fn(conn);
     } catch {
       this.dropConnection(targetWsUrl);
       conn = await this.getConnection(targetWsUrl);
+      return await fn(conn);
+    }
+  }
+
+  async navigate(targetWsUrl: string, url: string): Promise<string> {
+    return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
+
+      // Listen for frameNavigated to capture the final URL from the event itself,
+      // avoiding a separate Runtime.evaluate round-trip.
+      const navigatedPromise = conn
+        .waitForEvent<{ frame?: { url?: string } }>("Page.frameNavigated", 6000)
+        .catch(() => undefined);
       const loadPromise = Promise.race([
         conn.waitForEvent("Page.loadEventFired", 6000),
         conn.waitForEvent("Page.frameStoppedLoading", 6000),
       ]);
+
       await conn.send("Page.navigate", { url });
+
+      const navigatedEvent = await navigatedPromise;
       try {
         await loadPromise;
       } catch {
-        // fall back to reading location below
+        // page may still be usable
       }
-      const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
-        expression: "window.location.href",
-        returnByValue: true,
-      });
-      return result.result.value ?? url;
-    } finally {
-      // keep pooled connection
-    }
+
+      return navigatedEvent?.frame?.url ?? url;
+    });
   }
 
   async interact(targetWsUrl: string, payload: InteractPayload): Promise<string> {
-    let conn = await this.getConnection(targetWsUrl);
     const p = JSON.stringify(payload);
     const expression = `(async () => {
       const payload = ${p};
@@ -549,40 +598,40 @@ export class ChromeCdpBrowserController implements BrowserController {
       throw new Error('Unsupported interact action');
     })()`;
 
-    const execute = async (c: CdpClient): Promise<string> => {
+    return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
-      const result = await c.send<{ result: { value?: string } }>("Runtime.evaluate", {
+      const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
         expression,
         returnByValue: true,
         awaitPromise: true,
       });
       const value = result.result.value ?? "";
 
-      // After a click, wait briefly for any navigation it may trigger
+      // After a click, check briefly if navigation starts (50ms instead of 500ms).
+      // Most clicks don't navigate, so a short timeout avoids penalising the common case.
       if (payload.action === "click" && value === "clicked") {
         try {
-          await c.waitForEvent("Page.frameStoppedLoading", 500);
+          await conn.waitForEvent("Page.frameNavigated", 50);
+          // Navigation started — wait for it to finish loading (up to 3s).
+          try {
+            await Promise.race([
+              conn.waitForEvent("Page.loadEventFired", 3000),
+              conn.waitForEvent("Page.frameStoppedLoading", 3000),
+            ]);
+          } catch {
+            // load didn't fire in time — page may still be usable
+          }
         } catch {
           // No navigation happened – that's fine for non-navigating clicks
         }
       }
 
       return value;
-    };
-
-    try {
-      return await execute(conn);
-    } catch {
-      // retry once with a fresh connection
-      this.dropConnection(targetWsUrl);
-      conn = await this.getConnection(targetWsUrl);
-      return await execute(conn);
-    }
+    });
   }
 
   async getContent(targetWsUrl: string, options: PageContentOptions): Promise<PageContentResult> {
     const o = JSON.stringify(options);
-    let conn = await this.getConnection(targetWsUrl);
     const expression = `(() => {
       const options = ${o};
       if (options.mode === 'title') return document.title ?? '';
@@ -600,7 +649,7 @@ export class ChromeCdpBrowserController implements BrowserController {
       return document.body?.innerText ?? '';
     })()`;
 
-    try {
+    return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
       const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
         expression,
@@ -608,17 +657,7 @@ export class ChromeCdpBrowserController implements BrowserController {
       });
       const content = result.result.value ?? "";
       return { mode: options.mode, content };
-    } catch {
-      this.dropConnection(targetWsUrl);
-      conn = await this.getConnection(targetWsUrl);
-      await this.ensureEnabled(targetWsUrl);
-      const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-      });
-      const content = result.result.value ?? "";
-      return { mode: options.mode, content };
-    }
+    });
   }
 
   async getInteractiveElements(
@@ -626,7 +665,6 @@ export class ChromeCdpBrowserController implements BrowserController {
     options: InteractiveElementsOptions,
   ): Promise<InteractiveElementsResult> {
     const o = JSON.stringify(options);
-    let conn = await this.getConnection(targetWsUrl);
     const expression = `(() => {
       const options = ${o};
       const visibleOnly = options.visibleOnly !== false;
@@ -842,23 +880,14 @@ export class ChromeCdpBrowserController implements BrowserController {
       return emptyResult;
     };
 
-    try {
+    return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
       const result = await conn.send<{ result: { value?: unknown } }>("Runtime.evaluate", {
         expression,
         returnByValue: true,
       });
       return extract(result);
-    } catch {
-      this.dropConnection(targetWsUrl);
-      conn = await this.getConnection(targetWsUrl);
-      await this.ensureEnabled(targetWsUrl);
-      const result = await conn.send<{ result: { value?: unknown } }>("Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-      });
-      return extract(result);
-    }
+    });
   }
 
   terminate(pid: number): void {
@@ -877,7 +906,7 @@ export class MockBrowserController implements BrowserController {
     { url: string; title: string; text: string; html: string }
   >();
 
-  async launch(sessionId: string): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
+  async launch(sessionId: string, _options?: LaunchOptions): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
     const cdpUrl = `mock://${sessionId}`;
     const targetWsUrl = cdpUrl;
     this.pages.set(cdpUrl, {
@@ -889,7 +918,7 @@ export class MockBrowserController implements BrowserController {
     return { pid: 1, cdpUrl, targetWsUrl };
   }
 
-  async connect(cdpUrl: string): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
+  async connect(cdpUrl: string, _options?: { userAgent?: string }): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
     this.pages.set(cdpUrl, {
       url: "about:blank",
       title: "about:blank",

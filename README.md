@@ -92,10 +92,12 @@ Default profile locations per platform:
 
 These options can also be set via environment variables (CLI flags take precedence):
 
-| Variable                       | Example                        | Description                     |
-| ------------------------------ | ------------------------------ | ------------------------------- |
-| `AGENTIC_BROWSER_CDP_URL`      | `http://127.0.0.1:9222`       | Connect to a running Chrome     |
-| `AGENTIC_BROWSER_USER_PROFILE` | `default` or an absolute path  | Launch with a real profile      |
+| Variable                       | Example                        | Description                          |
+| ------------------------------ | ------------------------------ | ------------------------------------ |
+| `AGENTIC_BROWSER_CDP_URL`      | `http://127.0.0.1:9222`       | Connect to a running Chrome          |
+| `AGENTIC_BROWSER_USER_PROFILE` | `default` or an absolute path  | Launch with a real profile           |
+| `AGENTIC_BROWSER_HEADLESS`     | `true`                         | Run Chrome in headless mode          |
+| `AGENTIC_BROWSER_USER_AGENT`   | `MyBot/1.0`                    | Override the browser user-agent      |
 
 ## Agent Commands (Recommended for LLMs)
 
@@ -105,6 +107,8 @@ The `agent` subcommand manages session state, auto-restarts on disconnect, gener
 agentic-browser agent start
 agentic-browser agent start --cdp-url http://127.0.0.1:9222
 agentic-browser agent start --user-profile default
+agentic-browser agent start --headless
+agentic-browser agent start --user-agent "MyBot/1.0"
 agentic-browser agent status
 agentic-browser agent run navigate '{"url":"https://example.com"}'
 agentic-browser agent run interact '{"action":"click","selector":"#login"}'
@@ -184,6 +188,8 @@ For direct control without session state management:
 agentic-browser session:start
 agentic-browser session:start --cdp-url http://127.0.0.1:9222
 agentic-browser session:start --user-profile default
+agentic-browser session:start --headless
+agentic-browser session:start --user-agent "MyBot/1.0"
 ```
 
 ### 2. Read Session Status

@@ -47,6 +47,19 @@ const core = createAgenticBrowserCore({
 const session = await core.startSession();
 ```
 
+### Headless mode with custom user-agent
+
+```ts
+const core = createAgenticBrowserCore({
+  env: {
+    ...process.env,
+    AGENTIC_BROWSER_HEADLESS: "true",
+    AGENTIC_BROWSER_USER_AGENT: "MyBot/1.0",
+  },
+});
+const session = await core.startSession();
+```
+
 ## Session Lifecycle
 
 ```ts
@@ -163,6 +176,7 @@ import type {
   ElementAction,
   ExecuteCommandInput,
   AgenticBrowserCoreOptions,
+  LaunchOptions,
 } from "agentic-browser";
 ```
 

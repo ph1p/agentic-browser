@@ -65,12 +65,13 @@ export class SessionManager {
     const sessionId = crypto.randomUUID();
     const token = this.ctx.tokenService.issue(sessionId);
     const launched = this.ctx.config.cdpUrl
-      ? await this.browser.connect(this.ctx.config.cdpUrl)
-      : await this.browser.launch(
-          sessionId,
-          this.ctx.config.browserExecutablePath,
-          this.ctx.config.userProfileDir,
-        );
+      ? await this.browser.connect(this.ctx.config.cdpUrl, { userAgent: this.ctx.config.userAgent })
+      : await this.browser.launch(sessionId, {
+          executablePath: this.ctx.config.browserExecutablePath,
+          userProfileDir: this.ctx.config.userProfileDir,
+          headless: this.ctx.config.headless,
+          userAgent: this.ctx.config.userAgent,
+        });
 
     const session: Session = {
       sessionId,
@@ -276,7 +277,12 @@ export class SessionManager {
         // ignore close failures
       }
     }
-    const relaunched = await this.browser.launch(sessionId, this.ctx.config.browserExecutablePath);
+    const relaunched = await this.browser.launch(sessionId, {
+      executablePath: this.ctx.config.browserExecutablePath,
+      userProfileDir: this.ctx.config.userProfileDir,
+      headless: this.ctx.config.headless,
+      userAgent: this.ctx.config.userAgent,
+    });
     const restarted: Session = {
       ...record.session,
       status: "ready",

@@ -76,6 +76,23 @@ Alternatively, launch a fresh Chrome with your default profile (Chrome must be c
 }
 ```
 
+Run headless with a custom user-agent:
+
+```json
+{
+  "mcpServers": {
+    "agentic-browser": {
+      "command": "npx",
+      "args": ["agentic-browser", "mcp"],
+      "env": {
+        "AGENTIC_BROWSER_HEADLESS": "true",
+        "AGENTIC_BROWSER_USER_AGENT": "MyBot/1.0"
+      }
+    }
+  }
+}
+```
+
 ### Other MCP Clients
 
 Any MCP-compatible client can connect via stdio transport:

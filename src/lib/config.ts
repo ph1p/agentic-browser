@@ -8,6 +8,8 @@ export interface AppConfig {
   commandTimeoutMs: number;
   cdpUrl?: string;
   userProfileDir?: string;
+  headless?: boolean;
+  userAgent?: string;
 }
 
 const DEFAULT_PORT = 43111;
@@ -43,5 +45,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     browserExecutablePath: env.AGENTIC_BROWSER_CHROME_PATH,
     cdpUrl: env.AGENTIC_BROWSER_CDP_URL,
     userProfileDir,
+    headless: env.AGENTIC_BROWSER_HEADLESS === "true" || env.AGENTIC_BROWSER_HEADLESS === "1",
+    userAgent: env.AGENTIC_BROWSER_USER_AGENT || undefined,
   };
 }

@@ -27,9 +27,14 @@ export interface RecordExecutionInput {
   selector?: string;
 }
 
+const SEARCH_CACHE_TTL_MS = 2000;
+
 export class MemoryService {
   private readonly store: TaskInsightStore;
   private readonly index: MemoryIndex;
+
+  /** Simple TTL cache for search results keyed by intent+domain+limit. */
+  private searchCache = new Map<string, { results: MemorySearchResult[]; ts: number }>();
 
   constructor(baseDir: string) {
     this.store = new TaskInsightStore(baseDir);
@@ -37,7 +42,20 @@ export class MemoryService {
   }
 
   search(input: MemorySearchInput): MemorySearchResult[] {
-    return this.index.search(this.store.list(), input);
+    const cacheKey = `${input.taskIntent}\0${input.siteDomain ?? ""}\0${input.limit ?? 10}`;
+    const now = Date.now();
+    const cached = this.searchCache.get(cacheKey);
+    if (cached && now - cached.ts < SEARCH_CACHE_TTL_MS) {
+      return cached.results;
+    }
+    const results = this.index.search(this.store.list(), input);
+    this.searchCache.set(cacheKey, { results, ts: now });
+    return results;
+  }
+
+  /** Invalidate search cache when data changes. */
+  private invalidateSearchCache(): void {
+    this.searchCache.clear();
   }
 
   inspect(insightId: string): TaskInsight {
@@ -83,6 +101,7 @@ export class MemoryService {
       updatedAt: now,
     };
     this.store.upsert(verified);
+    this.invalidateSearchCache();
     return verified;
   }
 
@@ -112,6 +131,7 @@ export class MemoryService {
         evidence: [evidence],
       };
       this.store.upsert(created);
+      this.invalidateSearchCache();
       return created;
     }
 
@@ -134,10 +154,12 @@ export class MemoryService {
         updatedAt: now,
       };
       this.store.upsert(versioned);
+      this.invalidateSearchCache();
       return versioned;
     }
 
     this.store.upsert(refreshed);
+    this.invalidateSearchCache();
     return refreshed;
   }
 
@@ -161,6 +183,7 @@ export class MemoryService {
     );
 
     this.store.upsert(failed);
+    this.invalidateSearchCache();
     return failed;
   }
 

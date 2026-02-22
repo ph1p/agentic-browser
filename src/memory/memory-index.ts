@@ -54,49 +54,100 @@ function selectorSignal(insight: TaskInsight): number {
   return 0.7 * recipeCoverage + 0.3 * evidenceStrength;
 }
 
+function scoreInsight(
+  insight: TaskInsight,
+  normalizedIntent: string,
+  normalizedDomain: string | undefined,
+): MemorySearchResult {
+  const insightIntent = normalize(insight.taskIntent);
+  const intentMatch = insightIntent === normalizedIntent ? 1 : 0;
+  const intentPartial =
+    intentMatch === 1 ||
+    insightIntent.includes(normalizedIntent) ||
+    normalizedIntent.includes(insightIntent)
+      ? 0.65
+      : 0;
+  const domainMatch =
+    normalizedDomain && normalize(insight.siteDomain) === normalizedDomain
+      ? 1
+      : normalizedDomain
+        ? 0
+        : 0.6;
+  const reliability =
+    0.6 * confidenceFromCounts(insight.successCount, insight.failureCount) +
+    0.4 * freshnessWeight(insight.freshness);
+  const selectorQuality = selectorSignal(insight);
+
+  const score =
+    0.5 * Math.max(intentMatch, intentPartial) +
+    0.2 * domainMatch +
+    0.15 * reliability +
+    0.15 * selectorQuality;
+
+  return {
+    insightId: insight.insightId,
+    taskIntent: insight.taskIntent,
+    siteDomain: insight.siteDomain,
+    confidence: insight.confidence,
+    freshness: insight.freshness,
+    lastVerifiedAt: insight.lastVerifiedAt,
+    selectorHints: buildSelectorHints(insight),
+    score,
+  } satisfies MemorySearchResult;
+}
+
 export class MemoryIndex {
+  /** Domain → insights index, rebuilt lazily when insight list changes. */
+  private domainIndex = new Map<string, TaskInsight[]>();
+  private indexedInsights: TaskInsight[] | null = null;
+  private indexedLength = 0;
+
+  /** Rebuild the domain index when the underlying array or its size changes. */
+  private ensureIndex(insights: TaskInsight[]): void {
+    if (this.indexedInsights === insights && this.indexedLength === insights.length) return;
+    this.domainIndex.clear();
+    for (const insight of insights) {
+      const domain = normalize(insight.siteDomain);
+      let bucket = this.domainIndex.get(domain);
+      if (!bucket) {
+        bucket = [];
+        this.domainIndex.set(domain, bucket);
+      }
+      bucket.push(insight);
+    }
+    this.indexedInsights = insights;
+    this.indexedLength = insights.length;
+  }
+
   search(insights: TaskInsight[], input: SearchInput): MemorySearchResult[] {
     const normalizedIntent = normalize(input.taskIntent);
     const normalizedDomain = input.siteDomain ? normalize(input.siteDomain) : undefined;
     const limit = input.limit ?? 10;
 
-    const ranked = insights
-      .map((insight) => {
-        const intentMatch = normalize(insight.taskIntent) === normalizedIntent ? 1 : 0;
-        const intentPartial =
-          intentMatch === 1 ||
-          normalize(insight.taskIntent).includes(normalizedIntent) ||
-          normalizedIntent.includes(normalize(insight.taskIntent))
-            ? 0.65
-            : 0;
-        const domainMatch =
-          normalizedDomain && normalize(insight.siteDomain) === normalizedDomain
-            ? 1
-            : normalizedDomain
-              ? 0
-              : 0.6;
-        const reliability =
-          0.6 * confidenceFromCounts(insight.successCount, insight.failureCount) +
-          0.4 * freshnessWeight(insight.freshness);
-        const selectorQuality = selectorSignal(insight);
+    this.ensureIndex(insights);
 
-        const score =
-          0.5 * Math.max(intentMatch, intentPartial) +
-          0.2 * domainMatch +
-          0.15 * reliability +
-          0.15 * selectorQuality;
+    // When a domain is specified, only score insights for that domain (O(bucket) not O(n)).
+    const candidates = normalizedDomain
+      ? this.domainIndex.get(normalizedDomain) ?? []
+      : insights;
 
-        return {
-          insightId: insight.insightId,
-          taskIntent: insight.taskIntent,
-          siteDomain: insight.siteDomain,
-          confidence: insight.confidence,
-          freshness: insight.freshness,
-          lastVerifiedAt: insight.lastVerifiedAt,
-          selectorHints: buildSelectorHints(insight),
-          score,
-        } satisfies MemorySearchResult;
-      })
+    // Fast path: limit=1 with exact intent match — return immediately without sorting.
+    if (limit === 1 && normalizedDomain) {
+      let best: MemorySearchResult | undefined;
+      for (const insight of candidates) {
+        const result = scoreInsight(insight, normalizedIntent, normalizedDomain);
+        if (result.score > 0 && (!best || result.score > best.score)) {
+          best = result;
+          // Perfect score shortcut: exact intent (0.5) + domain (0.2) = 0.7 baseline.
+          // If score >= 0.95 we won't find anything better.
+          if (best.score >= 0.95) break;
+        }
+      }
+      return best ? [best] : [];
+    }
+
+    const ranked = candidates
+      .map((insight) => scoreInsight(insight, normalizedIntent, normalizedDomain))
       .filter((result) => result.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);

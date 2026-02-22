@@ -17,10 +17,12 @@ The `agent` subcommand manages session state automatically — it persists the a
 
 #### `agent start` Options
 
-| Option               | Description                                                      |
-| -------------------- | ---------------------------------------------------------------- |
-| `--cdp-url <url>`    | Connect to a running Chrome (e.g. `http://127.0.0.1:9222`) instead of launching a new one. Your Chrome stays open when the session stops. |
-| `--user-profile <p>` | Launch Chrome with a real profile. Use `default` for your system Chrome profile, or pass an absolute path. **Requires Chrome to be closed first** — Chrome locks its profile directory. |
+| Option                  | Description                                                      |
+| ----------------------- | ---------------------------------------------------------------- |
+| `--cdp-url <url>`       | Connect to a running Chrome (e.g. `http://127.0.0.1:9222`) instead of launching a new one. Your Chrome stays open when the session stops. |
+| `--user-profile <path>` | Launch Chrome with a real profile. Use `default` for your system Chrome profile, or pass an absolute path. **Requires Chrome to be closed first** — Chrome locks its profile directory. |
+| `--headless`            | Run Chrome in headless mode (no visible window). Useful for CI/server environments. |
+| `--user-agent <string>` | Override the browser user-agent string sent with every request. |
 
 ### Navigate
 
@@ -104,6 +106,9 @@ agentic-browser session:start --cdp-url http://127.0.0.1:9222
 
 # Start (use your real Chrome profile)
 agentic-browser session:start --user-profile default
+
+# Start (headless, with custom user-agent)
+agentic-browser session:start --headless --user-agent "MyBot/1.0"
 
 # Status
 agentic-browser session:status <sessionId>
@@ -192,7 +197,7 @@ Runs the stdio-based MCP server. This is what AI tools invoke when you configure
 
 ## Recommended Workflow
 
-1. `agent start` — launch Chrome (or `agent start --cdp-url <url>` to connect to existing)
+1. `agent start` — launch Chrome (or `--cdp-url <url>` to connect, `--headless` for CI, `--user-agent` to override UA)
 2. `agent run navigate` — go to target page
 3. `agent elements` — discover what's clickable
 4. `agent run interact` — use discovered selectors
