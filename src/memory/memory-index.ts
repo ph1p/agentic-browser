@@ -127,9 +127,7 @@ export class MemoryIndex {
     this.ensureIndex(insights);
 
     // When a domain is specified, only score insights for that domain (O(bucket) not O(n)).
-    const candidates = normalizedDomain
-      ? this.domainIndex.get(normalizedDomain) ?? []
-      : insights;
+    const candidates = normalizedDomain ? (this.domainIndex.get(normalizedDomain) ?? []) : insights;
 
     // Fast path: limit=1 with exact intent match — return immediately without sorting.
     if (limit === 1 && normalizedDomain) {

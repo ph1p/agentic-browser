@@ -35,25 +35,32 @@ async function main() {
     .option("--user-profile <path>", "use 'default' for system Chrome profile or an absolute path")
     .option("--headless", "run Chrome in headless mode (no visible window)")
     .option("--user-agent <string>", "override the browser user-agent string")
-    .action(async (options: { cdpUrl?: string; userProfile?: string; headless?: boolean; userAgent?: string }) => {
-      if (options.cdpUrl) {
-        runtime.context.config.cdpUrl = options.cdpUrl;
-      }
-      if (options.userProfile) {
-        runtime.context.config.userProfileDir =
-          options.userProfile === "true" || options.userProfile === "default"
-            ? "default"
-            : options.userProfile;
-      }
-      if (options.headless) {
-        runtime.context.config.headless = true;
-      }
-      if (options.userAgent) {
-        runtime.context.config.userAgent = options.userAgent;
-      }
-      const result = await runSessionStart(runtime, { browser: "chrome" });
-      console.log(JSON.stringify(result));
-    });
+    .action(
+      async (options: {
+        cdpUrl?: string;
+        userProfile?: string;
+        headless?: boolean;
+        userAgent?: string;
+      }) => {
+        if (options.cdpUrl) {
+          runtime.context.config.cdpUrl = options.cdpUrl;
+        }
+        if (options.userProfile) {
+          runtime.context.config.userProfileDir =
+            options.userProfile === "true" || options.userProfile === "default"
+              ? "default"
+              : options.userProfile;
+        }
+        if (options.headless) {
+          runtime.context.config.headless = true;
+        }
+        if (options.userAgent) {
+          runtime.context.config.userAgent = options.userAgent;
+        }
+        const result = await runSessionStart(runtime, { browser: "chrome" });
+        console.log(JSON.stringify(result));
+      },
+    );
 
   program
     .command("session:status")
@@ -125,12 +132,12 @@ async function main() {
   program
     .command("page:content")
     .argument("<sessionId>")
-    .option("--mode <mode>", "title|text|html", "text")
+    .option("--mode <mode>", "title|text|html|a11y", "text")
     .option("--selector <selector>", "optional CSS selector")
     .action(
       async (
         sessionId: string,
-        options: { mode: "title" | "text" | "html"; selector?: string },
+        options: { mode: "title" | "text" | "html" | "a11y"; selector?: string },
       ) => {
         const result = await runPageContent(runtime, {
           sessionId,
@@ -186,25 +193,32 @@ async function main() {
     .option("--user-profile <path>", "use 'default' for system Chrome profile or an absolute path")
     .option("--headless", "run Chrome in headless mode (no visible window)")
     .option("--user-agent <string>", "override the browser user-agent string")
-    .action(async (options: { cdpUrl?: string; userProfile?: string; headless?: boolean; userAgent?: string }) => {
-      if (options.cdpUrl) {
-        runtime.context.config.cdpUrl = options.cdpUrl;
-      }
-      if (options.userProfile) {
-        runtime.context.config.userProfileDir =
-          options.userProfile === "true" || options.userProfile === "default"
-            ? "default"
-            : options.userProfile;
-      }
-      if (options.headless) {
-        runtime.context.config.headless = true;
-      }
-      if (options.userAgent) {
-        runtime.context.config.userAgent = options.userAgent;
-      }
-      const result = await agentStart(runtime);
-      console.log(JSON.stringify(result));
-    });
+    .action(
+      async (options: {
+        cdpUrl?: string;
+        userProfile?: string;
+        headless?: boolean;
+        userAgent?: string;
+      }) => {
+        if (options.cdpUrl) {
+          runtime.context.config.cdpUrl = options.cdpUrl;
+        }
+        if (options.userProfile) {
+          runtime.context.config.userProfileDir =
+            options.userProfile === "true" || options.userProfile === "default"
+              ? "default"
+              : options.userProfile;
+        }
+        if (options.headless) {
+          runtime.context.config.headless = true;
+        }
+        if (options.userAgent) {
+          runtime.context.config.userAgent = options.userAgent;
+        }
+        const result = await agentStart(runtime);
+        console.log(JSON.stringify(result));
+      },
+    );
 
   agent.command("status").action(async () => {
     const result = await agentStatus(runtime);
@@ -230,9 +244,9 @@ async function main() {
 
   agent
     .command("content")
-    .option("--mode <mode>", "title|text|html", "text")
+    .option("--mode <mode>", "title|text|html|a11y", "text")
     .option("--selector <selector>", "optional CSS selector")
-    .action(async (options: { mode: "title" | "text" | "html"; selector?: string }) => {
+    .action(async (options: { mode: "title" | "text" | "html" | "a11y"; selector?: string }) => {
       const result = await agentContent(runtime, options);
       console.log(JSON.stringify(result));
     });

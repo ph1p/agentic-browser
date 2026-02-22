@@ -84,6 +84,22 @@ export class SessionStore {
     this.write(state);
   }
 
+  /** Remove all terminated sessions from the store. Returns the count removed. */
+  purgeTerminated(): number {
+    const state = this.read();
+    const before = Object.keys(state.sessions).length;
+    for (const [id, record] of Object.entries(state.sessions)) {
+      if (record.session.status === "terminated" && id !== state.activeSessionId) {
+        delete state.sessions[id];
+      }
+    }
+    const removed = before - Object.keys(state.sessions).length;
+    if (removed > 0) {
+      this.write(state);
+    }
+    return removed;
+  }
+
   replaceSessions(sessions: StoredSessionRecord[], activeSessionId?: string): void {
     const state: StoreState = {
       sessions: Object.fromEntries(sessions.map((record) => [record.session.sessionId, record])),

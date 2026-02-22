@@ -9,23 +9,37 @@ import WebSocket from "ws";
 import { discoverChrome } from "./chrome-launcher.js";
 import { loadControlExtension } from "./extension-loader.js";
 
-export type InteractAction = "click" | "type" | "press" | "waitFor" | "evaluate";
+export type InteractAction =
+  | "click"
+  | "type"
+  | "press"
+  | "waitFor"
+  | "evaluate"
+  | "scroll"
+  | "hover"
+  | "select"
+  | "toggle";
 
 export interface InteractPayload {
   action: InteractAction;
   selector?: string;
   text?: string;
   key?: string;
+  value?: string;
+  scrollX?: number;
+  scrollY?: number;
   timeoutMs?: number;
 }
 
+export type PageContentMode = "title" | "text" | "html" | "a11y";
+
 export interface PageContentOptions {
-  mode: "title" | "text" | "html";
+  mode: PageContentMode;
   selector?: string;
 }
 
 export interface PageContentResult {
-  mode: "title" | "text" | "html";
+  mode: PageContentMode;
   content: string;
 }
 
@@ -81,7 +95,10 @@ export interface BrowserController {
     sessionId: string,
     options?: LaunchOptions,
   ): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }>;
-  connect(cdpUrl: string, options?: { userAgent?: string }): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }>;
+  connect(
+    cdpUrl: string,
+    options?: { userAgent?: string },
+  ): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }>;
   navigate(targetWsUrl: string, url: string): Promise<string>;
   interact(targetWsUrl: string, payload: InteractPayload): Promise<string>;
   getContent(targetWsUrl: string, options: PageContentOptions): Promise<PageContentResult>;
@@ -321,7 +338,12 @@ function resolveDefaultProfileDir(): string {
     return path.join(home, "Library", "Application Support", "Google", "Chrome");
   }
   if (platform === "win32") {
-    return path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "Google", "Chrome", "User Data");
+    return path.join(
+      process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"),
+      "Google",
+      "Chrome",
+      "User Data",
+    );
   }
   // linux and others
   return path.join(home, ".config", "google-chrome");
@@ -371,7 +393,10 @@ export class ChromeCdpBrowserController implements BrowserController {
     this.dropConnection(targetWsUrl);
   }
 
-  async connect(cdpUrl: string, options?: { userAgent?: string }): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
+  async connect(
+    cdpUrl: string,
+    options?: { userAgent?: string },
+  ): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
     const parsed = new URL(cdpUrl);
     const port = Number.parseInt(parsed.port, 10);
     if (!port) {
@@ -429,9 +454,7 @@ export class ChromeCdpBrowserController implements BrowserController {
     }
 
     const launchAttempts: Array<{ withExtension: boolean; headless: boolean }> = headless
-      ? [
-          { withExtension: false, headless: true },
-        ]
+      ? [{ withExtension: false, headless: true }]
       : [
           { withExtension: true, headless: false },
           { withExtension: false, headless: false },
@@ -496,10 +519,7 @@ export class ChromeCdpBrowserController implements BrowserController {
   }
 
   /** Execute fn with a pooled connection; on failure drop connection and retry once. */
-  private async withRetry<T>(
-    targetWsUrl: string,
-    fn: (conn: CdpClient) => Promise<T>,
-  ): Promise<T> {
+  private async withRetry<T>(targetWsUrl: string, fn: (conn: CdpClient) => Promise<T>): Promise<T> {
     let conn = await this.getConnection(targetWsUrl);
     try {
       return await fn(conn);
@@ -595,6 +615,43 @@ export class ChromeCdpBrowserController implements BrowserController {
         }
         return typeof result === 'string' ? result : JSON.stringify(result);
       }
+      if (payload.action === 'scroll') {
+        if (payload.selector) {
+          const el = document.querySelector(payload.selector);
+          if (!el) throw new Error('Selector not found');
+          el.scrollBy({ left: payload.scrollX ?? 0, top: payload.scrollY ?? 0, behavior: 'smooth' });
+          return 'scrolled element';
+        }
+        window.scrollBy({ left: payload.scrollX ?? 0, top: payload.scrollY ?? 0, behavior: 'smooth' });
+        return 'scrolled page';
+      }
+      if (payload.action === 'hover') {
+        const el = document.querySelector(payload.selector);
+        if (!el) throw new Error('Selector not found');
+        const rect = el.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: cx, clientY: cy }));
+        el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy }));
+        el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy }));
+        return 'hovered';
+      }
+      if (payload.action === 'select') {
+        const el = document.querySelector(payload.selector);
+        if (!el) throw new Error('Selector not found');
+        if (el.tagName.toLowerCase() !== 'select') throw new Error('Element is not a <select>');
+        el.value = payload.value ?? '';
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return 'selected ' + el.value;
+      }
+      if (payload.action === 'toggle') {
+        const el = document.querySelector(payload.selector);
+        if (!el) throw new Error('Selector not found');
+        el.click();
+        const checked = el.checked !== undefined ? el.checked : el.getAttribute('aria-checked') === 'true';
+        return 'toggled to ' + (checked ? 'checked' : 'unchecked');
+      }
       throw new Error('Unsupported interact action');
     })()`;
 
@@ -631,6 +688,11 @@ export class ChromeCdpBrowserController implements BrowserController {
   }
 
   async getContent(targetWsUrl: string, options: PageContentOptions): Promise<PageContentResult> {
+    if (options.mode === "a11y") {
+      const content = await this.getAccessibilityTree(targetWsUrl);
+      return { mode: "a11y", content };
+    }
+
     const o = JSON.stringify(options);
     const expression = `(() => {
       const options = ${o};
@@ -657,6 +719,98 @@ export class ChromeCdpBrowserController implements BrowserController {
       });
       const content = result.result.value ?? "";
       return { mode: options.mode, content };
+    });
+  }
+
+  private async getAccessibilityTree(targetWsUrl: string): Promise<string> {
+    return await this.withRetry(targetWsUrl, async (conn) => {
+      await conn.send("Accessibility.enable");
+
+      const { nodes } = await conn.send<{
+        nodes: Array<{
+          nodeId: string;
+          parentId?: string;
+          role?: { value: string };
+          name?: { value: string };
+          value?: { value: string };
+          description?: { value: string };
+          properties?: Array<{ name: string; value: { value: unknown } }>;
+          childIds?: string[];
+          ignored?: boolean;
+        }>;
+      }>("Accessibility.getFullAXTree");
+
+      // Build parent→children map
+      const childrenMap = new Map<string, string[]>();
+      const nodeMap = new Map<string, (typeof nodes)[0]>();
+      for (const node of nodes) {
+        nodeMap.set(node.nodeId, node);
+        if (node.parentId) {
+          const siblings = childrenMap.get(node.parentId);
+          if (siblings) {
+            siblings.push(node.nodeId);
+          } else {
+            childrenMap.set(node.parentId, [node.nodeId]);
+          }
+        }
+      }
+
+      const lines: string[] = [];
+
+      const formatNode = (nodeId: string, depth: number): void => {
+        const node = nodeMap.get(nodeId);
+        if (!node) return;
+
+        const role = node.role?.value ?? "unknown";
+        const name = node.name?.value ?? "";
+        const value = node.value?.value ?? "";
+
+        // Skip ignored nodes and generic containers with no name
+        if (node.ignored) {
+          // Still traverse children — ignored containers may have visible children
+          const children = childrenMap.get(nodeId) ?? node.childIds ?? [];
+          for (const childId of children) {
+            formatNode(childId, depth);
+          }
+          return;
+        }
+
+        // Skip noise: unnamed generic/group nodes just add indentation
+        const skip =
+          !name && !value && (role === "generic" || role === "none" || role === "GenericContainer");
+        if (!skip) {
+          const indent = "  ".repeat(depth);
+          let line = `${indent}${role}`;
+          if (name) line += ` "${name}"`;
+          if (value) line += ` value="${value}"`;
+
+          // Append key states (checked, expanded, selected, disabled, etc.)
+          if (node.properties) {
+            for (const prop of node.properties) {
+              if (prop.value.value === true) {
+                line += ` [${prop.name}]`;
+              } else if (prop.name === "checked" && prop.value.value === "mixed") {
+                line += ` [indeterminate]`;
+              }
+            }
+          }
+
+          lines.push(line);
+        }
+
+        const children = childrenMap.get(nodeId) ?? node.childIds ?? [];
+        for (const childId of children) {
+          formatNode(childId, skip ? depth : depth + 1);
+        }
+      };
+
+      // Find root(s) — nodes without parentId
+      const roots = nodes.filter((n) => !n.parentId);
+      for (const root of roots) {
+        formatNode(root.nodeId, 0);
+      }
+
+      return lines.join("\n");
     });
   }
 
@@ -906,7 +1060,10 @@ export class MockBrowserController implements BrowserController {
     { url: string; title: string; text: string; html: string }
   >();
 
-  async launch(sessionId: string, _options?: LaunchOptions): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
+  async launch(
+    sessionId: string,
+    _options?: LaunchOptions,
+  ): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
     const cdpUrl = `mock://${sessionId}`;
     const targetWsUrl = cdpUrl;
     this.pages.set(cdpUrl, {
@@ -918,7 +1075,10 @@ export class MockBrowserController implements BrowserController {
     return { pid: 1, cdpUrl, targetWsUrl };
   }
 
-  async connect(cdpUrl: string, _options?: { userAgent?: string }): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
+  async connect(
+    cdpUrl: string,
+    _options?: { userAgent?: string },
+  ): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
     this.pages.set(cdpUrl, {
       url: "about:blank",
       title: "about:blank",

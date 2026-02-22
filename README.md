@@ -84,6 +84,7 @@ agentic-browser agent start --user-profile /path/to/chrome/profile
 ```
 
 Default profile locations per platform:
+
 - **macOS:** `~/Library/Application Support/Google/Chrome`
 - **Linux:** `~/.config/google-chrome`
 - **Windows:** `%LOCALAPPDATA%\Google\Chrome\User Data`
@@ -92,12 +93,12 @@ Default profile locations per platform:
 
 These options can also be set via environment variables (CLI flags take precedence):
 
-| Variable                       | Example                        | Description                          |
-| ------------------------------ | ------------------------------ | ------------------------------------ |
-| `AGENTIC_BROWSER_CDP_URL`      | `http://127.0.0.1:9222`       | Connect to a running Chrome          |
-| `AGENTIC_BROWSER_USER_PROFILE` | `default` or an absolute path  | Launch with a real profile           |
-| `AGENTIC_BROWSER_HEADLESS`     | `true`                         | Run Chrome in headless mode          |
-| `AGENTIC_BROWSER_USER_AGENT`   | `MyBot/1.0`                    | Override the browser user-agent      |
+| Variable                       | Example                       | Description                     |
+| ------------------------------ | ----------------------------- | ------------------------------- |
+| `AGENTIC_BROWSER_CDP_URL`      | `http://127.0.0.1:9222`       | Connect to a running Chrome     |
+| `AGENTIC_BROWSER_USER_PROFILE` | `default` or an absolute path | Launch with a real profile      |
+| `AGENTIC_BROWSER_HEADLESS`     | `true`                        | Run Chrome in headless mode     |
+| `AGENTIC_BROWSER_USER_AGENT`   | `MyBot/1.0`                   | Override the browser user-agent |
 
 ## Agent Commands (Recommended for LLMs)
 

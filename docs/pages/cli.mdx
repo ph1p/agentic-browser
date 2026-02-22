@@ -17,12 +17,12 @@ The `agent` subcommand manages session state automatically — it persists the a
 
 #### `agent start` Options
 
-| Option                  | Description                                                      |
-| ----------------------- | ---------------------------------------------------------------- |
-| `--cdp-url <url>`       | Connect to a running Chrome (e.g. `http://127.0.0.1:9222`) instead of launching a new one. Your Chrome stays open when the session stops. |
+| Option                  | Description                                                                                                                                                                             |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--cdp-url <url>`       | Connect to a running Chrome (e.g. `http://127.0.0.1:9222`) instead of launching a new one. Your Chrome stays open when the session stops.                                               |
 | `--user-profile <path>` | Launch Chrome with a real profile. Use `default` for your system Chrome profile, or pass an absolute path. **Requires Chrome to be closed first** — Chrome locks its profile directory. |
-| `--headless`            | Run Chrome in headless mode (no visible window). Useful for CI/server environments. |
-| `--user-agent <string>` | Override the browser user-agent string sent with every request. |
+| `--headless`            | Run Chrome in headless mode (no visible window). Useful for CI/server environments.                                                                                                     |
+| `--user-agent <string>` | Override the browser user-agent string sent with every request.                                                                                                                         |
 
 ### Navigate
 

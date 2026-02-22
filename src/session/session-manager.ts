@@ -57,9 +57,16 @@ export class SessionManager {
       throw new Error("Only chrome is supported");
     }
 
+    // If there's an existing active session, try to clean it up first
     const active = this.store.getActive();
     if (active && active.session.status !== "terminated") {
-      throw new Error("A managed session is already active");
+      // Check if the existing session is still alive
+      if (await this.isSessionAlive(active)) {
+        // Return the healthy existing session instead of throwing
+        return active.session;
+      }
+      // Dead session — force-terminate and clean up
+      await this.forceTerminate(active);
     }
 
     const sessionId = crypto.randomUUID();
@@ -97,11 +104,45 @@ export class SessionManager {
     return record.session;
   }
 
-  async executeCommand(sessionId: string, input: ExecuteCommandInput): Promise<Command> {
-    const record = this.mustGetRecord(sessionId);
-    if (record.session.status !== "ready") {
-      throw new Error("Session is not ready. Restart session and retry.");
+  /** Return a healthy session, recovering automatically if needed. */
+  async ensureSession(sessionId: string): Promise<StoredSessionRecord> {
+    const record = this.store.get(sessionId);
+    if (!record) {
+      throw new Error("Session not found");
     }
+
+    // Already ready — quick-verify the connection is alive
+    if (record.session.status === "ready") {
+      if (await this.isSessionAlive(record)) {
+        return record;
+      }
+      // Connection died silently — mark failed and fall through to recovery
+      this.recordEvent(sessionId, "lifecycle", "warning", "Session connection lost, recovering");
+    }
+
+    // Attempt automatic recovery for non-terminated sessions
+    if (record.session.status !== "terminated") {
+      try {
+        const recovered = await this.restartSession(sessionId);
+        return this.mustGetRecord(recovered.sessionId);
+      } catch (restartError) {
+        this.recordEvent(
+          sessionId,
+          "lifecycle",
+          "error",
+          `Recovery failed: ${(restartError as Error).message}`,
+        );
+        throw new Error(
+          `Session is not ready and recovery failed: ${(restartError as Error).message}`,
+        );
+      }
+    }
+
+    throw new Error("Session is terminated. Start a new session.");
+  }
+
+  async executeCommand(sessionId: string, input: ExecuteCommandInput): Promise<Command> {
+    const record = await this.ensureSession(sessionId);
 
     const command: Command = {
       commandId: input.commandId,
@@ -202,18 +243,12 @@ export class SessionManager {
   }
 
   async getContent(sessionId: string, options: PageContentOptions) {
-    const record = this.mustGetRecord(sessionId);
-    if (record.session.status !== "ready") {
-      throw new Error("Session is not ready");
-    }
+    const record = await this.ensureSession(sessionId);
     return await this.browser.getContent(record.targetWsUrl, options);
   }
 
   async getInteractiveElements(sessionId: string, options: InteractiveElementsOptions) {
-    const record = this.mustGetRecord(sessionId);
-    if (record.session.status !== "ready") {
-      throw new Error("Session is not ready");
-    }
+    const record = await this.ensureSession(sessionId);
     return await this.browser.getInteractiveElements(record.targetWsUrl, options);
   }
 
@@ -266,10 +301,8 @@ export class SessionManager {
 
   async restartSession(sessionId: string): Promise<Session> {
     const record = this.mustGetRecord(sessionId);
-    if (record.session.status === "ready") {
-      return record.session;
-    }
 
+    // Clean up old connection and process regardless of status
     if (this.browser.closeConnection) {
       try {
         this.browser.closeConnection(record.targetWsUrl);
@@ -277,12 +310,23 @@ export class SessionManager {
         // ignore close failures
       }
     }
-    const relaunched = await this.browser.launch(sessionId, {
-      executablePath: this.ctx.config.browserExecutablePath,
-      userProfileDir: this.ctx.config.userProfileDir,
-      headless: this.ctx.config.headless,
-      userAgent: this.ctx.config.userAgent,
-    });
+    // Kill the old process if it's still around
+    if (record.pid > 0) {
+      try {
+        this.browser.terminate(record.pid);
+      } catch {
+        // already dead — fine
+      }
+    }
+
+    const relaunched = this.ctx.config.cdpUrl
+      ? await this.browser.connect(this.ctx.config.cdpUrl, { userAgent: this.ctx.config.userAgent })
+      : await this.browser.launch(sessionId, {
+          executablePath: this.ctx.config.browserExecutablePath,
+          userProfileDir: this.ctx.config.userProfileDir,
+          headless: this.ctx.config.headless,
+          userAgent: this.ctx.config.userAgent,
+        });
     const restarted: Session = {
       ...record.session,
       status: "ready",
@@ -405,6 +449,57 @@ export class SessionManager {
       keptActiveSessionId: active?.session.sessionId,
       dryRun,
     };
+  }
+
+  /** Quick health check — probe the CDP connection with a lightweight evaluate. */
+  private async isSessionAlive(record: StoredSessionRecord): Promise<boolean> {
+    if (!record.targetWsUrl) return false;
+    if (record.pid > 0) {
+      try {
+        process.kill(record.pid, 0); // signal 0 = existence check
+      } catch (err: unknown) {
+        // EPERM means the process exists but we can't signal it — still alive
+        if ((err as NodeJS.ErrnoException).code === "EPERM") {
+          // fall through to CDP check
+        } else {
+          return false; // ESRCH = process is gone
+        }
+      }
+    }
+    try {
+      await this.browser.getContent(record.targetWsUrl, { mode: "title" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Force-terminate a session record, cleaning up process, connection, and store. */
+  private async forceTerminate(record: StoredSessionRecord): Promise<void> {
+    const { sessionId } = record.session;
+    if (this.browser.closeConnection) {
+      try {
+        this.browser.closeConnection(record.targetWsUrl);
+      } catch {
+        // ignore
+      }
+    }
+    if (record.pid > 0) {
+      try {
+        this.browser.terminate(record.pid);
+      } catch {
+        // already dead
+      }
+    }
+    this.ctx.tokenService.revoke(sessionId);
+    const terminated: Session = {
+      ...record.session,
+      status: "terminated",
+      endedAt: new Date().toISOString(),
+    };
+    this.store.setSession(terminated);
+    this.store.clearActive(sessionId);
+    this.recordEvent(sessionId, "lifecycle", "warning", "Session force-terminated (stale)");
   }
 
   private mustGetRecord(sessionId: string): StoredSessionRecord {

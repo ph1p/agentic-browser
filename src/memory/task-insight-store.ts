@@ -39,8 +39,14 @@ export class TaskInsightStore {
     // Flush pending writes on exit
     const onExit = () => this.flushSync();
     process.on("exit", onExit);
-    process.on("SIGINT", () => { this.flushSync(); process.exit(0); });
-    process.on("SIGTERM", () => { this.flushSync(); process.exit(0); });
+    process.on("SIGINT", () => {
+      this.flushSync();
+      process.exit(0);
+    });
+    process.on("SIGTERM", () => {
+      this.flushSync();
+      process.exit(0);
+    });
   }
 
   list(): TaskInsight[] {

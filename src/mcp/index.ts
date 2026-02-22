@@ -17,6 +17,20 @@ function genId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Resolve a session ID — auto-starts a session if none exists.
+ * This means the LLM never has to call browser_start_session explicitly.
+ */
+async function resolveSession(sessionId?: string): Promise<string> {
+  if (sessionId) return sessionId;
+  if (activeSessionId) return activeSessionId;
+
+  // Auto-start a session
+  const session = await getCore().startSession();
+  activeSessionId = session.sessionId;
+  return activeSessionId;
+}
+
 const server = new McpServer({
   name: "agentic-browser",
   version: "0.1.0",
@@ -24,7 +38,7 @@ const server = new McpServer({
 
 server.tool(
   "browser_start_session",
-  "Start a Chrome browser session for web automation. Call this first before using any other browser tool. Returns a sessionId you'll need for all subsequent calls.",
+  "Start a new Chrome browser session (or return the existing one if healthy). Sessions auto-start when you call any other browser tool, so you rarely need to call this explicitly. Use this to force a fresh session after stopping the previous one.",
   {},
   async () => {
     const session = await getCore().startSession();
@@ -35,14 +49,13 @@ server.tool(
 
 server.tool(
   "browser_navigate",
-  "Navigate the browser to a URL. The browser must have an active session.",
+  "Navigate the browser to a URL. A session is auto-started if needed.",
   {
     url: z.string().describe("The URL to navigate to"),
-    sessionId: z.string().optional().describe("Session ID (uses active session if omitted)"),
+    sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
   },
   async ({ url, sessionId }) => {
-    const sid = sessionId ?? activeSessionId;
-    if (!sid) throw new Error("No active session. Call browser_start_session first.");
+    const sid = await resolveSession(sessionId);
     const result = await getCore().runCommand({
       sessionId: sid,
       commandId: genId("nav"),
@@ -55,28 +68,41 @@ server.tool(
 
 server.tool(
   "browser_interact",
-  'Interact with a page element. Actions: "click" (click element), "type" (type text into input), "press" (press a keyboard key like Enter), "waitFor" (wait for element to appear).',
+  'Interact with a page element. Actions: "click" (click element), "type" (type text into input), "press" (press a keyboard key like Enter), "waitFor" (wait for element to appear), "scroll" (scroll page or element), "hover" (hover over element), "select" (pick option in <select>), "toggle" (toggle checkbox/radio/switch). A session is auto-started if needed.',
   {
-    action: z.enum(["click", "type", "press", "waitFor"]).describe("The interaction type"),
+    action: z
+      .enum(["click", "type", "press", "waitFor", "scroll", "hover", "select", "toggle"])
+      .describe("The interaction type"),
     selector: z.string().optional().describe("CSS selector for the target element"),
     text: z.string().optional().describe('Text to type (required for "type" action)'),
     key: z
       .string()
       .optional()
       .describe('Key to press (required for "press" action, e.g. "Enter", "Tab")'),
+    value: z.string().optional().describe('Option value to select (required for "select" action)'),
+    scrollX: z
+      .number()
+      .optional()
+      .describe('Horizontal scroll delta in pixels (for "scroll" action)'),
+    scrollY: z
+      .number()
+      .optional()
+      .describe('Vertical scroll delta in pixels (for "scroll" action, positive = down)'),
     timeoutMs: z
       .number()
       .optional()
       .describe('Timeout in milliseconds (for "waitFor" action, default 4000)'),
-    sessionId: z.string().optional().describe("Session ID (uses active session if omitted)"),
+    sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
   },
-  async ({ action, selector, text, key, timeoutMs, sessionId }) => {
-    const sid = sessionId ?? activeSessionId;
-    if (!sid) throw new Error("No active session. Call browser_start_session first.");
+  async ({ action, selector, text, key, value, scrollX, scrollY, timeoutMs, sessionId }) => {
+    const sid = await resolveSession(sessionId);
     const payload: Record<string, unknown> = { action };
     if (selector) payload.selector = selector;
     if (text) payload.text = text;
     if (key) payload.key = key;
+    if (value) payload.value = value;
+    if (scrollX !== undefined) payload.scrollX = scrollX;
+    if (scrollY !== undefined) payload.scrollY = scrollY;
     if (timeoutMs) payload.timeoutMs = timeoutMs;
     const result = await getCore().runCommand({
       sessionId: sid,
@@ -90,18 +116,20 @@ server.tool(
 
 server.tool(
   "browser_get_content",
-  'Get the current page content. Modes: "title" (page title only), "text" (readable text content), "html" (raw HTML). Use selector to scope to a specific element.',
+  'Get the current page content. Modes: "text" (readable text), "a11y" (accessibility tree — best for understanding page structure), "title" (page title only), "html" (raw HTML). Use "a11y" to see the full page hierarchy with roles, names, and states. A session is auto-started if needed.',
   {
-    mode: z.enum(["title", "text", "html"]).default("text").describe("Content extraction mode"),
+    mode: z
+      .enum(["title", "text", "html", "a11y"])
+      .default("text")
+      .describe("Content extraction mode"),
     selector: z
       .string()
       .optional()
       .describe('CSS selector to scope content (e.g. "main", "#content")'),
-    sessionId: z.string().optional().describe("Session ID (uses active session if omitted)"),
+    sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
   },
   async ({ mode, selector, sessionId }) => {
-    const sid = sessionId ?? activeSessionId;
-    if (!sid) throw new Error("No active session. Call browser_start_session first.");
+    const sid = await resolveSession(sessionId);
     const result = await getCore().getPageContent({ sessionId: sid, mode, selector });
     return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
   },
@@ -109,7 +137,7 @@ server.tool(
 
 server.tool(
   "browser_get_elements",
-  "Discover all interactive elements on the current page (buttons, links, inputs, etc.). Returns CSS selectors you can use with browser_interact. Call this to understand what's on the page before interacting.",
+  "Discover all interactive elements on the current page (buttons, links, inputs, etc.). Returns CSS selectors you can use with browser_interact. A session is auto-started if needed.",
   {
     roles: z
       .array(
@@ -133,11 +161,10 @@ server.tool(
       .string()
       .optional()
       .describe("CSS selector to scope element discovery to a subtree"),
-    sessionId: z.string().optional().describe("Session ID (uses active session if omitted)"),
+    sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
   },
   async ({ roles, visibleOnly, limit, selector, sessionId }) => {
-    const sid = sessionId ?? activeSessionId;
-    if (!sid) throw new Error("No active session. Call browser_start_session first.");
+    const sid = await resolveSession(sessionId);
     const result = await getCore().getInteractiveElements({
       sessionId: sid,
       roles,
@@ -167,13 +194,22 @@ server.tool(
 
 server.tool(
   "browser_stop_session",
-  "Stop the browser session and terminate Chrome. Call this when you're done with browser automation.",
+  "Stop the browser session and terminate Chrome. The next browser tool call will auto-start a fresh session.",
   {
     sessionId: z.string().optional().describe("Session ID (uses active session if omitted)"),
   },
   async ({ sessionId }) => {
     const sid = sessionId ?? activeSessionId;
-    if (!sid) throw new Error("No active session.");
+    if (!sid) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ ok: true, message: "No active session to stop." }),
+          },
+        ],
+      };
+    }
     await getCore().stopSession(sid);
     if (activeSessionId === sid) activeSessionId = undefined;
     return {
@@ -193,6 +229,12 @@ export async function main() {
         // Best-effort cleanup
       }
       activeSessionId = undefined;
+    }
+    // Clean up terminated sessions from the store
+    try {
+      getCore().sessions.cleanupSessions({ maxAgeDays: 0 });
+    } catch {
+      // best-effort
     }
   };
 

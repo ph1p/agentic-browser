@@ -105,7 +105,7 @@ export async function agentRun(
 
 export async function agentContent(
   runtime: Runtime,
-  input: { mode: "title" | "text" | "html"; selector?: string },
+  input: { mode: "title" | "text" | "html" | "a11y"; selector?: string },
 ) {
   const sessionId = requireSessionId(runtime);
   await ensureReady(runtime, sessionId);

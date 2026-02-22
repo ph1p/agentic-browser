@@ -41,7 +41,7 @@ export class ControlApi {
 
   async getContent(
     sessionId: string,
-    options: { mode: "title" | "text" | "html"; selector?: string },
+    options: { mode: "title" | "text" | "html" | "a11y"; selector?: string },
   ) {
     return await this.sessions.getContent(sessionId, options);
   }

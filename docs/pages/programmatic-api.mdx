@@ -107,6 +107,21 @@ const result = await core.runCommand({
 
 // Evaluate JavaScript
 { action: "evaluate", text: "document.title" }
+
+// Scroll page down by 500px
+{ action: "scroll", scrollY: 500 }
+
+// Scroll a specific element
+{ action: "scroll", selector: "#feed", scrollX: 0, scrollY: 300 }
+
+// Hover over an element
+{ action: "hover", selector: ".dropdown-trigger" }
+
+// Select an option in a <select> dropdown
+{ action: "select", selector: "select#country", value: "US" }
+
+// Toggle a checkbox or radio button
+{ action: "toggle", selector: "input[type=checkbox]#agree" }
 ```
 
 ## Get Page Content
@@ -114,9 +129,24 @@ const result = await core.runCommand({
 ```ts
 const content = await core.getPageContent({
   sessionId: session.sessionId,
-  mode: "text", // "title" | "text" | "html"
+  mode: "text", // "title" | "text" | "html" | "a11y"
   selector: "main", // optional: scope to element
 });
+
+// Use "a11y" mode to get the accessibility tree — best for understanding page structure
+const a11yTree = await core.getPageContent({
+  sessionId: session.sessionId,
+  mode: "a11y",
+});
+// Returns an indented tree like:
+// WebArea "Page Title"
+//   navigation "Main"
+//     link "Home"
+//     link "About"
+//   main
+//     heading "Welcome" [level=1]
+//     textbox "Search" value=""
+//     button "Submit"
 ```
 
 ## Discover Interactive Elements
