@@ -29,10 +29,23 @@ async function main() {
   const program = new Command();
   program.name("agentic-browser").description("Agentic browser CLI");
 
-  program.command("session:start").action(async () => {
-    const result = await runSessionStart(runtime, { browser: "chrome" });
-    console.log(JSON.stringify(result));
-  });
+  program
+    .command("session:start")
+    .option("--cdp-url <url>", "connect to existing Chrome via CDP endpoint URL")
+    .option("--user-profile <path>", "use 'default' for system Chrome profile or an absolute path")
+    .action(async (options: { cdpUrl?: string; userProfile?: string }) => {
+      if (options.cdpUrl) {
+        runtime.context.config.cdpUrl = options.cdpUrl;
+      }
+      if (options.userProfile) {
+        runtime.context.config.userProfileDir =
+          options.userProfile === "true" || options.userProfile === "default"
+            ? "default"
+            : options.userProfile;
+      }
+      const result = await runSessionStart(runtime, { browser: "chrome" });
+      console.log(JSON.stringify(result));
+    });
 
   program
     .command("session:status")
@@ -159,10 +172,23 @@ async function main() {
     .command("agent")
     .description("Stateful agent wrapper with session persistence and auto-retry");
 
-  agent.command("start").action(async () => {
-    const result = await agentStart(runtime);
-    console.log(JSON.stringify(result));
-  });
+  agent
+    .command("start")
+    .option("--cdp-url <url>", "connect to existing Chrome via CDP endpoint URL")
+    .option("--user-profile <path>", "use 'default' for system Chrome profile or an absolute path")
+    .action(async (options: { cdpUrl?: string; userProfile?: string }) => {
+      if (options.cdpUrl) {
+        runtime.context.config.cdpUrl = options.cdpUrl;
+      }
+      if (options.userProfile) {
+        runtime.context.config.userProfileDir =
+          options.userProfile === "true" || options.userProfile === "default"
+            ? "default"
+            : options.userProfile;
+      }
+      const result = await agentStart(runtime);
+      console.log(JSON.stringify(result));
+    });
 
   agent.command("status").action(async () => {
     const result = await agentStatus(runtime);

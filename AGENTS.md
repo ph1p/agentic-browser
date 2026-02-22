@@ -59,8 +59,10 @@ AgenticBrowserCore → ControlApi → SessionManager → BrowserController (CDP)
 ```
 
 1. `createAgenticBrowserCore()` builds AppContext + ChromeCdpBrowserController
-2. Commands execute via CDP `Runtime.evaluate` on the browser page
-3. Results are recorded as evidence, indexed per-domain for memory search
+2. `createSession` either launches a new Chrome (`browser.launch()`) or connects to existing one (`browser.connect(cdpUrl)`) based on config
+3. Commands execute via CDP `Runtime.evaluate` on the browser page
+4. Results are recorded as evidence, indexed per-domain for memory search
+5. Connected sessions (pid=0) skip `process.kill` on terminate — the user's browser stays open
 
 ## Code Conventions
 
@@ -108,6 +110,8 @@ AgenticBrowserCore → ControlApi → SessionManager → BrowserController (CDP)
 
 - `AGENTIC_BROWSER_LOG_DIR` — base dir for sessions/memory/events (default: `.agentic-browser`)
 - `AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH` — explicit Chrome path (auto-discovered if not set)
+- `AGENTIC_BROWSER_CDP_URL` — connect to an already-running Chrome via CDP (e.g. `http://127.0.0.1:9222`)
+- `AGENTIC_BROWSER_USER_PROFILE` — use real Chrome profile (`default`, `true`, or absolute path)
 
 ## MCP Server
 

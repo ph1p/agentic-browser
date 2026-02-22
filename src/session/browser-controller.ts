@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 
 import WebSocket from "ws";
@@ -72,7 +73,9 @@ export interface BrowserController {
   launch(
     sessionId: string,
     executablePath?: string,
+    userProfileDir?: string,
   ): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }>;
+  connect(cdpUrl: string): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }>;
   navigate(targetWsUrl: string, url: string): Promise<string>;
   interact(targetWsUrl: string, payload: InteractPayload): Promise<string>;
   getContent(targetWsUrl: string, options: PageContentOptions): Promise<PageContentResult>;
@@ -270,6 +273,19 @@ async function getFreePort(): Promise<number> {
   });
 }
 
+function resolveDefaultProfileDir(): string {
+  const platform = os.platform();
+  const home = os.homedir();
+  if (platform === "darwin") {
+    return path.join(home, "Library", "Application Support", "Google", "Chrome");
+  }
+  if (platform === "win32") {
+    return path.join(process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "Google", "Chrome", "User Data");
+  }
+  // linux and others
+  return path.join(home, ".config", "google-chrome");
+}
+
 export class ChromeCdpBrowserController implements BrowserController {
   private readonly connections = new Map<
     string,
@@ -314,6 +330,18 @@ export class ChromeCdpBrowserController implements BrowserController {
     this.dropConnection(targetWsUrl);
   }
 
+  async connect(cdpUrl: string): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
+    const parsed = new URL(cdpUrl);
+    const port = Number.parseInt(parsed.port, 10);
+    if (!port) {
+      throw new Error(`Invalid CDP URL: could not extract port from ${cdpUrl}`);
+    }
+    await waitForDebugger(port);
+    const targetWsUrl = await createTarget(cdpUrl);
+    await evaluateExpression(targetWsUrl, "window.location.href");
+    return { pid: 0, cdpUrl, targetWsUrl };
+  }
+
   private async ensureEnabled(targetWsUrl: string): Promise<void> {
     const cached = this.connections.get(targetWsUrl);
     if (!cached) {
@@ -332,10 +360,18 @@ export class ChromeCdpBrowserController implements BrowserController {
   async launch(
     sessionId: string,
     explicitPath?: string,
+    userProfileDir?: string,
   ): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
     const executablePath = discoverChrome(explicitPath);
     const extension = loadControlExtension();
-    const profileDir = path.join(this.baseDir, "profiles", sessionId);
+    let profileDir: string;
+    if (userProfileDir === "default") {
+      profileDir = resolveDefaultProfileDir();
+    } else if (userProfileDir) {
+      profileDir = userProfileDir;
+    } else {
+      profileDir = path.join(this.baseDir, "profiles", sessionId);
+    }
     fs.mkdirSync(profileDir, { recursive: true });
     const launchAttempts: Array<{ withExtension: boolean; headless: boolean }> = [
       { withExtension: true, headless: false },
@@ -815,6 +851,7 @@ export class ChromeCdpBrowserController implements BrowserController {
   }
 
   terminate(pid: number): void {
+    if (pid === 0) return; // external browser — don't kill
     try {
       process.kill(pid, "SIGTERM");
     } catch {
@@ -839,6 +876,16 @@ export class MockBrowserController implements BrowserController {
       html: "<html><body></body></html>",
     });
     return { pid: 1, cdpUrl, targetWsUrl };
+  }
+
+  async connect(cdpUrl: string): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
+    this.pages.set(cdpUrl, {
+      url: "about:blank",
+      title: "about:blank",
+      text: "",
+      html: "<html><body></body></html>",
+    });
+    return { pid: 0, cdpUrl, targetWsUrl: cdpUrl };
   }
 
   async navigate(cdpUrl: string, url: string): Promise<string> {

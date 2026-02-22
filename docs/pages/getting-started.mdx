@@ -37,6 +37,28 @@ agentic-browser agent stop
 
 Every command prints exactly one JSON line to stdout.
 
+### Connect to an existing Chrome
+
+If you already have Chrome running with remote debugging, connect to it instead of launching a new instance:
+
+```bash
+# Start Chrome with remote debugging yourself
+google-chrome --remote-debugging-port=9222
+
+# Then connect agentic-browser to it
+agentic-browser agent start --cdp-url http://127.0.0.1:9222
+```
+
+Stopping the session will **not** kill your Chrome process.
+
+### Use your real Chrome profile
+
+Launch Chrome with your existing profile (cookies, bookmarks, extensions, saved passwords):
+
+```bash
+agentic-browser agent start --user-profile default
+```
+
 ## Quick Start: MCP Server
 
 If your AI tool supports [MCP](https://modelcontextprotocol.io), configure the stdio server instead of using CLI commands.
@@ -113,10 +135,12 @@ await core.stopSession(session.sessionId);
 
 ## Environment Variables
 
-| Variable                                 | Default            | Description                                 |
-| ---------------------------------------- | ------------------ | ------------------------------------------- |
-| `AGENTIC_BROWSER_LOG_DIR`                | `.agentic-browser` | Base directory for sessions, memory, events |
-| `AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH` | _(auto-discover)_  | Explicit path to Chrome executable          |
+| Variable                                 | Default            | Description                                                           |
+| ---------------------------------------- | ------------------ | --------------------------------------------------------------------- |
+| `AGENTIC_BROWSER_LOG_DIR`                | `.agentic-browser` | Base directory for sessions, memory, events                           |
+| `AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH` | _(auto-discover)_  | Explicit path to Chrome executable                                    |
+| `AGENTIC_BROWSER_CDP_URL`                |                    | Connect to an already-running Chrome (e.g. `http://127.0.0.1:9222`)  |
+| `AGENTIC_BROWSER_USER_PROFILE`           |                    | Use real Chrome profile (`default`, `true`, or an absolute path)      |
 
 ## Next Steps
 

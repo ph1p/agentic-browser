@@ -6,6 +6,8 @@ export interface AppConfig {
   logDir: string;
   browserExecutablePath?: string;
   commandTimeoutMs: number;
+  cdpUrl?: string;
+  userProfileDir?: string;
 }
 
 const DEFAULT_PORT = 43111;
@@ -25,11 +27,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new Error("AGENTIC_BROWSER_COMMAND_TIMEOUT_MS must be a positive integer");
   }
 
+  const userProfile = env.AGENTIC_BROWSER_USER_PROFILE;
+  let userProfileDir: string | undefined;
+  if (userProfile === "true" || userProfile === "default") {
+    userProfileDir = "default";
+  } else if (userProfile && path.isAbsolute(userProfile)) {
+    userProfileDir = userProfile;
+  }
+
   return {
     host: env.AGENTIC_BROWSER_HOST ?? "127.0.0.1",
     wsPort,
     commandTimeoutMs,
     logDir: env.AGENTIC_BROWSER_LOG_DIR ?? path.resolve(process.cwd(), ".agentic-browser"),
     browserExecutablePath: env.AGENTIC_BROWSER_CHROME_PATH,
+    cdpUrl: env.AGENTIC_BROWSER_CDP_URL,
+    userProfileDir,
   };
 }

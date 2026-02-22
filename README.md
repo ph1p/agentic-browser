@@ -37,12 +37,72 @@ npm run lint
 npm test
 ```
 
+## Connect to Existing Chrome / Use Your Profile
+
+By default, agentic-browser launches a fresh Chrome instance with an isolated profile. You can instead **connect to an already-running Chrome** or **launch Chrome with your real profile** (bookmarks, cookies, extensions, saved passwords).
+
+### Connect to a running Chrome
+
+Start Chrome yourself with remote debugging enabled:
+
+```bash
+# macOS
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+
+# Linux
+google-chrome --remote-debugging-port=9222
+
+# Windows
+chrome.exe --remote-debugging-port=9222
+```
+
+Then connect agentic-browser to it:
+
+```bash
+agentic-browser agent start --cdp-url http://127.0.0.1:9222
+# or low-level:
+agentic-browser session:start --cdp-url http://127.0.0.1:9222
+```
+
+When connected this way, stopping the session will **not** kill your Chrome process.
+
+### Launch Chrome with your real profile
+
+```bash
+# Use your default Chrome profile
+agentic-browser agent start --user-profile default
+
+# Use a specific profile directory
+agentic-browser agent start --user-profile /path/to/chrome/profile
+```
+
+The default profile path is resolved per platform:
+- **macOS:** `~/Library/Application Support/Google/Chrome`
+- **Linux:** `~/.config/google-chrome`
+- **Windows:** `%LOCALAPPDATA%\Google\Chrome\User Data`
+
+### Environment variables
+
+Both options can also be set via environment variables:
+
+```bash
+# Connect to existing Chrome
+export AGENTIC_BROWSER_CDP_URL=http://127.0.0.1:9222
+
+# Use default Chrome profile (set to "default", "true", or an absolute path)
+export AGENTIC_BROWSER_USER_PROFILE=default
+```
+
+CLI flags take precedence over environment variables.
+
 ## Agent Commands (Recommended for LLMs)
 
 The `agent` subcommand manages session state, auto-restarts on disconnect, generates command IDs, and retries failed commands automatically:
 
 ```bash
 agentic-browser agent start
+agentic-browser agent start --cdp-url http://127.0.0.1:9222
+agentic-browser agent start --user-profile default
 agentic-browser agent status
 agentic-browser agent run navigate '{"url":"https://example.com"}'
 agentic-browser agent run interact '{"action":"click","selector":"#login"}'
@@ -120,6 +180,8 @@ For direct control without session state management:
 
 ```bash
 agentic-browser session:start
+agentic-browser session:start --cdp-url http://127.0.0.1:9222
+agentic-browser session:start --user-profile default
 ```
 
 ### 2. Read Session Status
@@ -218,6 +280,31 @@ const memory = core.searchMemory({
 });
 
 await core.stopSession(session.sessionId);
+```
+
+### Connect to existing Chrome programmatically
+
+```ts
+import { createAgenticBrowserCore } from "agentic-browser";
+
+// Connect to a Chrome instance running with --remote-debugging-port=9222
+const core = createAgenticBrowserCore({
+  env: { ...process.env, AGENTIC_BROWSER_CDP_URL: "http://127.0.0.1:9222" },
+});
+const session = await core.startSession();
+// session is now controlling the existing Chrome — stopping won't kill it
+```
+
+### Use default Chrome profile programmatically
+
+```ts
+import { createAgenticBrowserCore } from "agentic-browser";
+
+const core = createAgenticBrowserCore({
+  env: { ...process.env, AGENTIC_BROWSER_USER_PROFILE: "default" },
+});
+const session = await core.startSession();
+// Chrome launched with your real profile (cookies, bookmarks, extensions)
 ```
 
 ## Documentation

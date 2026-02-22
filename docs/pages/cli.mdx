@@ -6,7 +6,7 @@ The `agent` subcommand manages session state automatically — it persists the a
 
 | Command                        | Description                            |
 | ------------------------------ | -------------------------------------- |
-| `agent start`                  | Start a Chrome session                 |
+| `agent start [options]`        | Start or connect to a Chrome session   |
 | `agent status`                 | Show current session status            |
 | `agent run <type> <payload>`   | Execute a command (navigate, interact) |
 | `agent content [options]`      | Get page content                       |
@@ -14,6 +14,13 @@ The `agent` subcommand manages session state automatically — it persists the a
 | `agent memory-search <intent>` | Search task memory                     |
 | `agent stop`                   | Stop the session                       |
 | `agent cleanup`                | Remove old session data                |
+
+#### `agent start` Options
+
+| Option               | Description                                                      |
+| -------------------- | ---------------------------------------------------------------- |
+| `--cdp-url <url>`    | Connect to existing Chrome via CDP (e.g. `http://127.0.0.1:9222`) |
+| `--user-profile <p>` | Use `default` for system Chrome profile, or an absolute path      |
 
 ### Navigate
 
@@ -89,8 +96,14 @@ For direct control without session state management. You manage session IDs and 
 ### Session Lifecycle
 
 ```bash
-# Start
+# Start (fresh Chrome)
 agentic-browser session:start
+
+# Start (connect to existing Chrome)
+agentic-browser session:start --cdp-url http://127.0.0.1:9222
+
+# Start (use your real Chrome profile)
+agentic-browser session:start --user-profile default
 
 # Status
 agentic-browser session:status <sessionId>
@@ -179,7 +192,7 @@ Runs the stdio-based MCP server. This is what AI tools invoke when you configure
 
 ## Recommended Workflow
 
-1. `agent start` — launch Chrome
+1. `agent start` — launch Chrome (or `agent start --cdp-url <url>` to connect to existing)
 2. `agent run navigate` — go to target page
 3. `agent elements` — discover what's clickable
 4. `agent run interact` — use discovered selectors

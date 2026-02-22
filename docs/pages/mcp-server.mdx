@@ -42,6 +42,40 @@ Add to `.cursor/mcp.json` in your project root:
 }
 ```
 
+### Connect to existing Chrome or use your profile
+
+Set environment variables in your MCP config to connect to an already-running Chrome or use your real Chrome profile:
+
+```json
+{
+  "mcpServers": {
+    "agentic-browser": {
+      "command": "npx",
+      "args": ["agentic-browser", "mcp"],
+      "env": {
+        "AGENTIC_BROWSER_CDP_URL": "http://127.0.0.1:9222"
+      }
+    }
+  }
+}
+```
+
+Or to use your default Chrome profile:
+
+```json
+{
+  "mcpServers": {
+    "agentic-browser": {
+      "command": "npx",
+      "args": ["agentic-browser", "mcp"],
+      "env": {
+        "AGENTIC_BROWSER_USER_PROFILE": "default"
+      }
+    }
+  }
+}
+```
+
 ### Other MCP Clients
 
 Any MCP-compatible client can connect via stdio transport:

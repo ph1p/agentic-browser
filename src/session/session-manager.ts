@@ -64,7 +64,13 @@ export class SessionManager {
 
     const sessionId = crypto.randomUUID();
     const token = this.ctx.tokenService.issue(sessionId);
-    const launched = await this.browser.launch(sessionId, this.ctx.config.browserExecutablePath);
+    const launched = this.ctx.config.cdpUrl
+      ? await this.browser.connect(this.ctx.config.cdpUrl)
+      : await this.browser.launch(
+          sessionId,
+          this.ctx.config.browserExecutablePath,
+          this.ctx.config.userProfileDir,
+        );
 
     const session: Session = {
       sessionId,

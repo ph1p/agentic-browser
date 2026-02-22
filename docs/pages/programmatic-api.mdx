@@ -24,6 +24,26 @@ const core = createAgenticBrowserCore({
 });
 ```
 
+### Connect to existing Chrome
+
+```ts
+const core = createAgenticBrowserCore({
+  env: { ...process.env, AGENTIC_BROWSER_CDP_URL: "http://127.0.0.1:9222" },
+});
+const session = await core.startSession();
+// Controls existing Chrome — stopping won't kill the process
+```
+
+### Use your real Chrome profile
+
+```ts
+const core = createAgenticBrowserCore({
+  env: { ...process.env, AGENTIC_BROWSER_USER_PROFILE: "default" },
+});
+const session = await core.startSession();
+// Chrome launched with cookies, bookmarks, extensions from your profile
+```
+
 ## Session Lifecycle
 
 ```ts
