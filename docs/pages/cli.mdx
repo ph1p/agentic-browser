@@ -19,8 +19,8 @@ The `agent` subcommand manages session state automatically — it persists the a
 
 | Option               | Description                                                      |
 | -------------------- | ---------------------------------------------------------------- |
-| `--cdp-url <url>`    | Connect to existing Chrome via CDP (e.g. `http://127.0.0.1:9222`) |
-| `--user-profile <p>` | Use `default` for system Chrome profile, or an absolute path      |
+| `--cdp-url <url>`    | Connect to a running Chrome (e.g. `http://127.0.0.1:9222`) instead of launching a new one. Your Chrome stays open when the session stops. |
+| `--user-profile <p>` | Launch Chrome with a real profile. Use `default` for your system Chrome profile, or pass an absolute path. **Requires Chrome to be closed first** — Chrome locks its profile directory. |
 
 ### Navigate
 

@@ -24,24 +24,27 @@ const core = createAgenticBrowserCore({
 });
 ```
 
-### Connect to existing Chrome
+### Connect to your running Chrome
+
+Control a Chrome that's already open (launched with `--remote-debugging-port=9222`):
 
 ```ts
 const core = createAgenticBrowserCore({
   env: { ...process.env, AGENTIC_BROWSER_CDP_URL: "http://127.0.0.1:9222" },
 });
 const session = await core.startSession();
-// Controls existing Chrome — stopping won't kill the process
+// Stopping the session will NOT close your Chrome
 ```
 
-### Use your real Chrome profile
+### Launch Chrome with your real profile
+
+Uses your default Chrome profile (cookies, extensions, bookmarks). Chrome must be closed first.
 
 ```ts
 const core = createAgenticBrowserCore({
   env: { ...process.env, AGENTIC_BROWSER_USER_PROFILE: "default" },
 });
 const session = await core.startSession();
-// Chrome launched with cookies, bookmarks, extensions from your profile
 ```
 
 ## Session Lifecycle

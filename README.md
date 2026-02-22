@@ -37,13 +37,15 @@ npm run lint
 npm test
 ```
 
-## Connect to Existing Chrome / Use Your Profile
+## Use Your Existing Chrome
 
-By default, agentic-browser launches a fresh Chrome instance with an isolated profile. You can instead **connect to an already-running Chrome** or **launch Chrome with your real profile** (bookmarks, cookies, extensions, saved passwords).
+By default, agentic-browser launches a fresh Chrome with a throwaway profile. If you want to use your logged-in sessions, cookies, or extensions, there are two ways:
 
-### Connect to a running Chrome
+### Option 1: Control your running Chrome (recommended)
 
-Start Chrome yourself with remote debugging enabled:
+This lets agentic-browser take over your already-open Chrome — no need to quit it, no need to log in again.
+
+**Step 1.** Quit Chrome, then relaunch it with remote debugging enabled:
 
 ```bash
 # macOS
@@ -56,44 +58,44 @@ google-chrome --remote-debugging-port=9222
 chrome.exe --remote-debugging-port=9222
 ```
 
-Then connect agentic-browser to it:
+Chrome opens normally with all your tabs, extensions, and sessions intact.
+
+**Step 2.** Connect agentic-browser:
 
 ```bash
 agentic-browser agent start --cdp-url http://127.0.0.1:9222
-# or low-level:
-agentic-browser session:start --cdp-url http://127.0.0.1:9222
 ```
 
-When connected this way, stopping the session will **not** kill your Chrome process.
+Stopping the session will **not** close your Chrome.
 
-### Launch Chrome with your real profile
+### Option 2: Launch a new Chrome with your profile
+
+**Important:** You must quit Chrome first. Chrome locks its profile directory — if Chrome is already running, this command will fail.
 
 ```bash
-# Use your default Chrome profile
+# Quit Chrome, then:
 agentic-browser agent start --user-profile default
+```
 
-# Use a specific profile directory
+This launches a new Chrome window using your default profile. You can also pass a custom profile path:
+
+```bash
 agentic-browser agent start --user-profile /path/to/chrome/profile
 ```
 
-The default profile path is resolved per platform:
+Default profile locations per platform:
 - **macOS:** `~/Library/Application Support/Google/Chrome`
 - **Linux:** `~/.config/google-chrome`
 - **Windows:** `%LOCALAPPDATA%\Google\Chrome\User Data`
 
 ### Environment variables
 
-Both options can also be set via environment variables:
+These options can also be set via environment variables (CLI flags take precedence):
 
-```bash
-# Connect to existing Chrome
-export AGENTIC_BROWSER_CDP_URL=http://127.0.0.1:9222
-
-# Use default Chrome profile (set to "default", "true", or an absolute path)
-export AGENTIC_BROWSER_USER_PROFILE=default
-```
-
-CLI flags take precedence over environment variables.
+| Variable                       | Example                        | Description                     |
+| ------------------------------ | ------------------------------ | ------------------------------- |
+| `AGENTIC_BROWSER_CDP_URL`      | `http://127.0.0.1:9222`       | Connect to a running Chrome     |
+| `AGENTIC_BROWSER_USER_PROFILE` | `default` or an absolute path  | Launch with a real profile      |
 
 ## Agent Commands (Recommended for LLMs)
 
@@ -282,29 +284,25 @@ const memory = core.searchMemory({
 await core.stopSession(session.sessionId);
 ```
 
-### Connect to existing Chrome programmatically
+### Connect to your running Chrome
 
 ```ts
-import { createAgenticBrowserCore } from "agentic-browser";
-
-// Connect to a Chrome instance running with --remote-debugging-port=9222
+// Chrome must be running with --remote-debugging-port=9222
 const core = createAgenticBrowserCore({
   env: { ...process.env, AGENTIC_BROWSER_CDP_URL: "http://127.0.0.1:9222" },
 });
 const session = await core.startSession();
-// session is now controlling the existing Chrome — stopping won't kill it
+// Stopping the session will NOT close your Chrome
 ```
 
-### Use default Chrome profile programmatically
+### Launch Chrome with your real profile
 
 ```ts
-import { createAgenticBrowserCore } from "agentic-browser";
-
+// Chrome must be closed first
 const core = createAgenticBrowserCore({
   env: { ...process.env, AGENTIC_BROWSER_USER_PROFILE: "default" },
 });
 const session = await core.startSession();
-// Chrome launched with your real profile (cookies, bookmarks, extensions)
 ```
 
 ## Documentation

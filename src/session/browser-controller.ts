@@ -373,6 +373,17 @@ export class ChromeCdpBrowserController implements BrowserController {
       profileDir = path.join(this.baseDir, "profiles", sessionId);
     }
     fs.mkdirSync(profileDir, { recursive: true });
+
+    // Chrome locks its profile with a "SingletonLock" file. If present, another
+    // Chrome instance owns this profile and a new launch will silently fail.
+    const lockFile = path.join(profileDir, "SingletonLock");
+    if (fs.existsSync(lockFile)) {
+      throw new Error(
+        `Chrome profile is already in use (lock file exists: ${lockFile}). ` +
+          "Quit the running Chrome instance first, or use --cdp-url to connect to it instead.",
+      );
+    }
+
     const launchAttempts: Array<{ withExtension: boolean; headless: boolean }> = [
       { withExtension: true, headless: false },
       { withExtension: false, headless: false },

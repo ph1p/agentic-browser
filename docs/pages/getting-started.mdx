@@ -37,23 +37,22 @@ agentic-browser agent stop
 
 Every command prints exactly one JSON line to stdout.
 
-### Connect to an existing Chrome
+### Use your existing Chrome
 
-If you already have Chrome running with remote debugging, connect to it instead of launching a new instance:
+Want your logged-in sessions, cookies, and extensions? Quit Chrome, relaunch it with remote debugging, and connect:
 
 ```bash
-# Start Chrome with remote debugging yourself
-google-chrome --remote-debugging-port=9222
+# 1. Quit Chrome, then relaunch with debugging enabled
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+# (Linux: google-chrome --remote-debugging-port=9222)
 
-# Then connect agentic-browser to it
+# 2. Connect agentic-browser to it
 agentic-browser agent start --cdp-url http://127.0.0.1:9222
 ```
 
-Stopping the session will **not** kill your Chrome process.
+Chrome opens normally with all your tabs and sessions. Stopping the agent will **not** close your Chrome.
 
-### Use your real Chrome profile
-
-Launch Chrome with your existing profile (cookies, bookmarks, extensions, saved passwords):
+Alternatively, launch a new Chrome with your default profile (requires quitting Chrome first):
 
 ```bash
 agentic-browser agent start --user-profile default
