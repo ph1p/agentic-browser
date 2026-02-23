@@ -288,27 +288,23 @@ async function createTarget(cdpUrl: string, url = "about:blank"): Promise<string
   return await ensurePageWebSocketUrl(cdpUrl);
 }
 
-async function applyUserAgent(targetWsUrl: string, userAgent: string): Promise<void> {
+/** Verify the page is ready and optionally set a custom user-agent, using a single connection. */
+async function initTarget(targetWsUrl: string, userAgent?: string): Promise<void> {
   const conn = await CdpConnection.connect(targetWsUrl);
   try {
-    await conn.send("Network.enable");
-    await conn.send("Network.setUserAgentOverride", { userAgent });
-  } finally {
-    conn.close();
-  }
-}
-
-async function evaluateExpression<T>(targetWsUrl: string, expression: string): Promise<T> {
-  const conn = await CdpConnection.connect(targetWsUrl);
-  try {
-    await conn.send("Page.enable");
-    await conn.send("Runtime.enable");
-    const result = await conn.send<{ result: { value?: T } }>("Runtime.evaluate", {
-      expression,
+    const enables: Promise<unknown>[] = [conn.send("Page.enable"), conn.send("Runtime.enable")];
+    if (userAgent) {
+      enables.push(conn.send("Network.enable"));
+    }
+    await Promise.all(enables);
+    await conn.send("Runtime.evaluate", {
+      expression: "window.location.href",
       returnByValue: true,
       awaitPromise: true,
     });
-    return (result.result.value as T) ?? ("" as T);
+    if (userAgent) {
+      await conn.send("Network.setUserAgentOverride", { userAgent });
+    }
   } finally {
     conn.close();
   }
@@ -404,10 +400,7 @@ export class ChromeCdpBrowserController implements BrowserController {
     }
     await waitForDebugger(port);
     const targetWsUrl = await createTarget(cdpUrl);
-    await evaluateExpression(targetWsUrl, "window.location.href");
-    if (options?.userAgent) {
-      await applyUserAgent(targetWsUrl, options.userAgent);
-    }
+    await initTarget(targetWsUrl, options?.userAgent);
     return { pid: 0, cdpUrl, targetWsUrl };
   }
 
@@ -416,14 +409,22 @@ export class ChromeCdpBrowserController implements BrowserController {
     if (!cached) {
       return;
     }
+    const promises: Promise<unknown>[] = [];
     if (!cached.enabled.page) {
-      await cached.conn.send("Page.enable");
-      cached.enabled.page = true;
+      promises.push(
+        cached.conn.send("Page.enable").then(() => {
+          cached.enabled.page = true;
+        }),
+      );
     }
     if (!cached.enabled.runtime) {
-      await cached.conn.send("Runtime.enable");
-      cached.enabled.runtime = true;
+      promises.push(
+        cached.conn.send("Runtime.enable").then(() => {
+          cached.enabled.runtime = true;
+        }),
+      );
     }
+    if (promises.length) await Promise.all(promises);
   }
 
   async launch(
@@ -495,13 +496,10 @@ export class ChromeCdpBrowserController implements BrowserController {
         await waitForDebugger(port);
         const cdpUrl = `http://127.0.0.1:${port}`;
         const targetWsUrl = await createTarget(cdpUrl, "about:blank");
-        await evaluateExpression(targetWsUrl, "window.location.href");
         if (!child.pid) {
           throw new Error("Failed to launch Chrome process");
         }
-        if (userAgent) {
-          await applyUserAgent(targetWsUrl, userAgent);
-        }
+        await initTarget(targetWsUrl, userAgent);
         return { pid: child.pid, cdpUrl, targetWsUrl };
       } catch (error) {
         lastError = error as Error;

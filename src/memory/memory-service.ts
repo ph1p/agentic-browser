@@ -192,13 +192,20 @@ export class MemoryService {
     taskIntent: string,
     siteDomain: string,
   ): TaskInsight | undefined {
-    return insights
-      .filter(
-        (insight) =>
-          insight.taskIntent.toLowerCase() === taskIntent.toLowerCase() &&
-          insight.siteDomain.toLowerCase() === siteDomain.toLowerCase(),
-      )
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    const intentLower = taskIntent.toLowerCase();
+    const domainLower = siteDomain.toLowerCase();
+    let best: TaskInsight | undefined;
+    for (const insight of insights) {
+      if (
+        insight.taskIntent.toLowerCase() === intentLower &&
+        insight.siteDomain.toLowerCase() === domainLower
+      ) {
+        if (!best || insight.updatedAt > best.updatedAt) {
+          best = insight;
+        }
+      }
+    }
+    return best;
   }
 
   private createEvidence(

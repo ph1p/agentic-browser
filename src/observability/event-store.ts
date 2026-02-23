@@ -16,7 +16,7 @@ export class EventStore {
     const existing = this.events.get(event.sessionId) ?? [];
     existing.push(event);
     this.events.set(event.sessionId, existing);
-    fs.appendFileSync(this.filePath, `${JSON.stringify(event)}\n`, "utf8");
+    fs.appendFile(this.filePath, `${JSON.stringify(event)}\n`, "utf8", () => {});
   }
 
   list(sessionId: string, limit = 100): SessionEvent[] {
