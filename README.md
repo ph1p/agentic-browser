@@ -143,10 +143,7 @@ Returns a JSON array of elements with CSS selectors and fallback selectors usabl
       "selector": "#login-btn",
       "fallbackSelectors": ["button[aria-label=\"Login\"]"],
       "role": "button",
-      "tagName": "button",
       "text": "Login",
-      "actions": ["click"],
-      "visible": true,
       "enabled": true
     }
   ],
@@ -155,13 +152,17 @@ Returns a JSON array of elements with CSS selectors and fallback selectors usabl
 }
 ```
 
+MCP responses are compact — `visible`, `actions`, and `tagName` are omitted to reduce token usage. The full element shape is available via the programmatic API.
+
+````
+
 ## MCP Server
 
 ### Quick Setup
 
 ```bash
 npx agentic-browser setup
-```
+````
 
 Detects your AI tools (Claude Code, Cursor) and writes the MCP config automatically.
 

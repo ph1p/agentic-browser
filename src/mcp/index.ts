@@ -43,7 +43,9 @@ server.tool(
   async () => {
     const session = await getCore().startSession();
     activeSessionId = session.sessionId;
-    return { content: [{ type: "text" as const, text: JSON.stringify(session) }] };
+    // Strip authTokenRef — security credential the LLM never needs
+    const { authTokenRef: _, ...compactSession } = session;
+    return { content: [{ type: "text" as const, text: JSON.stringify(compactSession) }] };
   },
 );
 
@@ -62,7 +64,9 @@ server.tool(
       type: "navigate",
       payload: { url },
     });
-    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    // Return only the fields the LLM needs
+    const compact = { resultStatus: result.resultStatus, resultMessage: result.resultMessage };
+    return { content: [{ type: "text" as const, text: JSON.stringify(compact) }] };
   },
 );
 
@@ -147,7 +151,9 @@ server.tool(
       type: "interact",
       payload,
     });
-    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    // Return only the fields the LLM needs
+    const compact = { resultStatus: result.resultStatus, resultMessage: result.resultMessage };
+    return { content: [{ type: "text" as const, text: JSON.stringify(compact) }] };
   },
 );
 
@@ -163,18 +169,51 @@ server.tool(
       .string()
       .optional()
       .describe('CSS selector to scope content (e.g. "main", "#content")'),
+    maxChars: z
+      .number()
+      .optional()
+      .describe(
+        "Maximum characters to return (default: 12000 for text/a11y, 6000 for html, no cap for title). Use a CSS selector to scope content instead of raising this limit.",
+      ),
     sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
   },
-  async ({ mode, selector, sessionId }) => {
+  async ({ mode, selector, maxChars, sessionId }) => {
     const sid = await resolveSession(sessionId);
     const result = await getCore().getPageContent({ sessionId: sid, mode, selector });
-    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+
+    // Apply truncation defaults per mode (title is never truncated)
+    const defaultMaxChars: Record<string, number | undefined> = {
+      text: 12000,
+      a11y: 12000,
+      html: 6000,
+      title: undefined,
+    };
+    const limit = maxChars ?? defaultMaxChars[mode];
+
+    if (limit && typeof result.content === "string" && result.content.length > limit) {
+      const originalLength = result.content.length;
+      const truncatedContent =
+        result.content.slice(0, limit) +
+        `\n\n[Truncated — showing first ${limit} of ${originalLength} characters. Use a CSS selector to scope the content.]`;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ ...result, content: truncatedContent, truncated: true }),
+          },
+        ],
+      };
+    }
+
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({ ...result, truncated: false }) }],
+    };
   },
 );
 
 server.tool(
   "browser_get_elements",
-  "Discover all interactive elements on the current page (buttons, links, inputs, etc.). Returns CSS selectors and fallbackSelectors you can use with browser_interact. Pass fallbackSelectors to browser_interact for automatic retry when the primary selector breaks. A session is auto-started if needed.",
+  "Discover all interactive elements on the current page (buttons, links, inputs, etc.). Returns CSS selectors and fallbackSelectors you can use with browser_interact. Pass fallbackSelectors to browser_interact for automatic retry when the primary selector breaks. Actions are derived from role: link/button/custom→click, input/textarea/contenteditable→click+type+press, select→click+select, checkbox/radio→toggle. A session is auto-started if needed.",
   {
     roles: z
       .array(
@@ -209,7 +248,33 @@ server.tool(
       limit,
       selector,
     });
-    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+
+    // Strip redundant fields to reduce token usage
+    const compactElements = result.elements.map((el: Record<string, unknown>) => {
+      const compact: Record<string, unknown> = { ...el };
+      // visible is always true when visibleOnly is true (the default)
+      if (visibleOnly) delete compact.visible;
+      // actions are derivable from role+inputType — documented in tool description
+      delete compact.actions;
+      // tagName is redundant with role
+      delete compact.tagName;
+      // ariaLabel duplicates text when they match
+      if (compact.ariaLabel && compact.ariaLabel === compact.text) delete compact.ariaLabel;
+      return compact;
+    });
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            elements: compactElements,
+            totalFound: result.totalFound,
+            truncated: result.truncated,
+          }),
+        },
+      ],
+    };
   },
 );
 
@@ -225,7 +290,35 @@ server.tool(
   },
   async ({ taskIntent, siteDomain, limit }) => {
     const result = getCore().searchMemory({ taskIntent, siteDomain, limit });
-    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+
+    // Post-process to reduce token usage
+    const compactResults = result.results.map((r: Record<string, unknown>) => {
+      const compact: Record<string, unknown> = { ...r };
+      // score is redundant — results are already sorted by relevance
+      delete compact.score;
+      // lastVerifiedAt is noise for the LLM
+      delete compact.lastVerifiedAt;
+      // Strip empty fallbackSelectors from aliases
+      if (Array.isArray(compact.selectorAliases)) {
+        compact.selectorAliases = (compact.selectorAliases as Record<string, unknown>[]).map(
+          (alias) => {
+            const compactAlias = { ...alias };
+            if (
+              Array.isArray(compactAlias.fallbackSelectors) &&
+              compactAlias.fallbackSelectors.length === 0
+            ) {
+              delete compactAlias.fallbackSelectors;
+            }
+            return compactAlias;
+          },
+        );
+      }
+      return compact;
+    });
+
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({ results: compactResults }) }],
+    };
   },
 );
 

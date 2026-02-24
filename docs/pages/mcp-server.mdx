@@ -111,7 +111,7 @@ Start a Chrome browser session. Call this first before any other browser tool.
 
 **Parameters:** None
 
-**Returns:** Session object with `sessionId`, `status`, `startedAt`.
+**Returns:** Session object with `sessionId`, `status`, `startedAt`. (`authTokenRef` is omitted from MCP responses.)
 
 ---
 
@@ -157,11 +157,14 @@ Navigation actions (`goBack`, `goForward`, `refresh`) and `dialog` don't require
 
 Get the current page content.
 
-| Parameter   | Type                              | Required | Default  | Description                    |
-| ----------- | --------------------------------- | -------- | -------- | ------------------------------ |
-| `mode`      | `"title"` \| `"text"` \| `"html"` | No       | `"text"` | Extraction mode                |
-| `selector`  | string                            | No       |          | CSS selector to scope content  |
-| `sessionId` | string                            | No       |          | Uses active session if omitted |
+| Parameter   | Type                                          | Required | Default  | Description                                                                              |
+| ----------- | --------------------------------------------- | -------- | -------- | ---------------------------------------------------------------------------------------- |
+| `mode`      | `"title"` \| `"text"` \| `"html"` \| `"a11y"` | No       | `"text"` | Extraction mode                                                                          |
+| `selector`  | string                                        | No       |          | CSS selector to scope content                                                            |
+| `maxChars`  | number                                        | No       |          | Max characters to return (default: 12000 for text/a11y, 6000 for html, no cap for title) |
+| `sessionId` | string                                        | No       |          | Uses active session if omitted                                                           |
+
+Content is automatically truncated at the default `maxChars` limit. When truncated, the response includes a `truncated: true` flag and a notice. Use a CSS `selector` to scope content instead of raising the limit.
 
 ---
 
@@ -186,16 +189,17 @@ Discover interactive elements on the page. Returns CSS selectors and fallback se
       "selector": "#login-btn",
       "fallbackSelectors": ["button[aria-label=\"Login\"]", "[data-testid=\"login\"]"],
       "role": "button",
-      "tagName": "button",
       "text": "Login",
-      "actions": ["click"],
-      "visible": true,
       "enabled": true
     }
   ],
   "totalFound": 42,
   "truncated": true
 }
+```
+
+MCP responses omit `visible` (always true when `visibleOnly` is true), `actions` (derivable from `role`), and `tagName` (redundant with `role`). These fields are still available via the programmatic API.
+
 ```
 
 ---
@@ -239,3 +243,4 @@ A typical sequence an AI assistant would use:
 7. `browser_get_content` with `mode: "text"` — verify login worked
 8. `browser_interact` with `action: "goBack"` — navigate back if needed
 9. `browser_stop_session` — done
+```
