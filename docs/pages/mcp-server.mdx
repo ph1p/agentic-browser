@@ -128,16 +128,28 @@ Navigate the browser to a URL.
 
 ### `browser_interact`
 
-Interact with a page element.
+Interact with a page element or perform browser-level actions.
 
-| Parameter   | Type                                              | Required | Description                                       |
-| ----------- | ------------------------------------------------- | -------- | ------------------------------------------------- |
-| `action`    | `"click"` \| `"type"` \| `"press"` \| `"waitFor"` | Yes      | Interaction type                                  |
-| `selector`  | string                                            | No       | CSS selector for the target element               |
-| `text`      | string                                            | No       | Text to type (for `type` action)                  |
-| `key`       | string                                            | No       | Key to press (for `press` action, e.g. `"Enter"`) |
-| `timeoutMs` | number                                            | No       | Timeout in ms (for `waitFor` action)              |
-| `sessionId` | string                                            | No       | Uses active session if omitted                    |
+**Element actions:** `click`, `type`, `press`, `waitFor`, `scroll`, `hover`, `select`, `toggle`
+
+**Navigation actions:** `goBack` (browser back), `goForward` (browser forward), `refresh` (reload page)
+
+**Dialog action:** `dialog` (handle JS alert/confirm/prompt)
+
+| Parameter           | Type     | Required | Description                                                                            |
+| ------------------- | -------- | -------- | -------------------------------------------------------------------------------------- |
+| `action`            | string   | Yes      | One of the actions listed above                                                        |
+| `selector`          | string   | No       | CSS selector for the target element                                                    |
+| `fallbackSelectors` | string[] | No       | Backup CSS selectors tried if the primary selector fails (from `browser_get_elements`) |
+| `text`              | string   | No       | Text to type (for `type`), or `"dismiss"` to dismiss a dialog (for `dialog`)           |
+| `key`               | string   | No       | Key to press (for `press` action, e.g. `"Enter"`)                                      |
+| `value`             | string   | No       | Option value (for `select`), or prompt text (for `dialog`)                             |
+| `scrollX`           | number   | No       | Horizontal scroll delta in pixels (for `scroll`)                                       |
+| `scrollY`           | number   | No       | Vertical scroll delta in pixels (for `scroll`, positive = down)                        |
+| `timeoutMs`         | number   | No       | Timeout in ms (for `waitFor` action)                                                   |
+| `sessionId`         | string   | No       | Uses active session if omitted                                                         |
+
+Navigation actions (`goBack`, `goForward`, `refresh`) and `dialog` don't require a selector.
 
 ---
 
@@ -155,7 +167,7 @@ Get the current page content.
 
 ### `browser_get_elements`
 
-Discover interactive elements on the page. Returns CSS selectors usable with `browser_interact`.
+Discover interactive elements on the page. Returns CSS selectors and fallback selectors usable with `browser_interact`. Pass `fallbackSelectors` to `browser_interact` for automatic retry when the primary selector breaks.
 
 | Parameter     | Type     | Required | Default | Description                                                                                                                 |
 | ------------- | -------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -172,6 +184,7 @@ Discover interactive elements on the page. Returns CSS selectors usable with `br
   "elements": [
     {
       "selector": "#login-btn",
+      "fallbackSelectors": ["button[aria-label=\"Login\"]", "[data-testid=\"login\"]"],
       "role": "button",
       "tagName": "button",
       "text": "Login",
@@ -189,7 +202,7 @@ Discover interactive elements on the page. Returns CSS selectors usable with `br
 
 ### `browser_search_memory`
 
-Search task memory for previously learned selectors and patterns.
+Search task memory for previously learned selectors, selector aliases, and interaction patterns. Results include `selectorHints` (proven selectors) and `selectorAliases` (human-readable names mapped to selectors with fallbacks).
 
 | Parameter    | Type   | Required | Default | Description                                    |
 | ------------ | ------ | -------- | ------- | ---------------------------------------------- |
@@ -219,9 +232,10 @@ A typical sequence an AI assistant would use:
 
 1. `browser_start_session` — launch Chrome
 2. `browser_navigate` with `url: "https://github.com/login"`
-3. `browser_get_elements` — see what's on the page
-4. `browser_interact` with `action: "type"`, `selector: "input[name=login]"`, `text: "username"`
+3. `browser_get_elements` — see what's on the page (returns selectors + fallback selectors)
+4. `browser_interact` with `action: "type"`, `selector: "input[name=login]"`, `fallbackSelectors: [...]`, `text: "username"`
 5. `browser_interact` with `action: "type"`, `selector: "input[name=password]"`, `text: "***"`
 6. `browser_interact` with `action: "click"`, `selector: "input[type=submit]"`
 7. `browser_get_content` with `mode: "text"` — verify login worked
-8. `browser_stop_session` — done
+8. `browser_interact` with `action: "goBack"` — navigate back if needed
+9. `browser_stop_session` — done

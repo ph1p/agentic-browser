@@ -68,18 +68,43 @@ server.tool(
 
 server.tool(
   "browser_interact",
-  'Interact with a page element. Actions: "click" (click element), "type" (type text into input), "press" (press a keyboard key like Enter), "waitFor" (wait for element to appear), "scroll" (scroll page or element), "hover" (hover over element), "select" (pick option in <select>), "toggle" (toggle checkbox/radio/switch). A session is auto-started if needed.',
+  'Interact with a page element or perform browser actions. Element actions: "click", "type", "press", "waitFor", "scroll", "hover", "select", "toggle". Navigation actions: "goBack" (browser back), "goForward" (browser forward), "refresh" (reload page). Dialog action: "dialog" (handle JS alert/confirm/prompt — use text="dismiss" to cancel, value="..." for prompt input). Fallback selectors are tried automatically if the primary selector fails. A session is auto-started if needed.',
   {
     action: z
-      .enum(["click", "type", "press", "waitFor", "scroll", "hover", "select", "toggle"])
+      .enum([
+        "click",
+        "type",
+        "press",
+        "waitFor",
+        "scroll",
+        "hover",
+        "select",
+        "toggle",
+        "goBack",
+        "goForward",
+        "refresh",
+        "dialog",
+      ])
       .describe("The interaction type"),
     selector: z.string().optional().describe("CSS selector for the target element"),
-    text: z.string().optional().describe('Text to type (required for "type" action)'),
+    fallbackSelectors: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Backup CSS selectors tried if the primary selector fails (from browser_get_elements)",
+      ),
+    text: z
+      .string()
+      .optional()
+      .describe('Text to type (for "type"), or "dismiss" to dismiss a dialog (for "dialog")'),
     key: z
       .string()
       .optional()
       .describe('Key to press (required for "press" action, e.g. "Enter", "Tab")'),
-    value: z.string().optional().describe('Option value to select (required for "select" action)'),
+    value: z
+      .string()
+      .optional()
+      .describe('Option value to select (for "select"), or prompt text (for "dialog")'),
     scrollX: z
       .number()
       .optional()
@@ -94,10 +119,22 @@ server.tool(
       .describe('Timeout in milliseconds (for "waitFor" action, default 4000)'),
     sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
   },
-  async ({ action, selector, text, key, value, scrollX, scrollY, timeoutMs, sessionId }) => {
+  async ({
+    action,
+    selector,
+    fallbackSelectors,
+    text,
+    key,
+    value,
+    scrollX,
+    scrollY,
+    timeoutMs,
+    sessionId,
+  }) => {
     const sid = await resolveSession(sessionId);
     const payload: Record<string, unknown> = { action };
     if (selector) payload.selector = selector;
+    if (fallbackSelectors) payload.fallbackSelectors = fallbackSelectors;
     if (text) payload.text = text;
     if (key) payload.key = key;
     if (value) payload.value = value;
@@ -137,7 +174,7 @@ server.tool(
 
 server.tool(
   "browser_get_elements",
-  "Discover all interactive elements on the current page (buttons, links, inputs, etc.). Returns CSS selectors you can use with browser_interact. A session is auto-started if needed.",
+  "Discover all interactive elements on the current page (buttons, links, inputs, etc.). Returns CSS selectors and fallbackSelectors you can use with browser_interact. Pass fallbackSelectors to browser_interact for automatic retry when the primary selector breaks. A session is auto-started if needed.",
   {
     roles: z
       .array(
@@ -178,7 +215,7 @@ server.tool(
 
 server.tool(
   "browser_search_memory",
-  "Search task memory for previously learned selectors and interaction patterns. Use this before interacting with a known site to reuse proven selectors instead of rediscovering them.",
+  "Search task memory for previously learned selectors, selector aliases, and interaction patterns. Results include selectorHints (proven selectors) and selectorAliases (human-readable names mapped to selectors with fallbacks). Use this before interacting with a known site to reuse proven selectors instead of rediscovering them.",
   {
     taskIntent: z
       .string()

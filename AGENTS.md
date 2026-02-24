@@ -117,15 +117,15 @@ AgenticBrowserCore → ControlApi → SessionManager → BrowserController (CDP)
 
 Subcommand: `agentic-browser mcp` (stdio transport). Setup: `agentic-browser setup`. Tools:
 
-| Tool                    | Purpose                        |
-| ----------------------- | ------------------------------ |
-| `browser_start_session` | Start Chrome, return sessionId |
-| `browser_navigate`      | Navigate to URL                |
-| `browser_interact`      | click / type / press / waitFor |
-| `browser_get_content`   | Get page title / text / html   |
-| `browser_get_elements`  | Discover interactive elements  |
-| `browser_search_memory` | Search task memory             |
-| `browser_stop_session`  | Stop Chrome session            |
+| Tool                    | Purpose                                                                                                   |
+| ----------------------- | --------------------------------------------------------------------------------------------------------- |
+| `browser_start_session` | Start Chrome, return sessionId                                                                            |
+| `browser_navigate`      | Navigate to URL                                                                                           |
+| `browser_interact`      | click / type / press / waitFor / scroll / hover / select / toggle / goBack / goForward / refresh / dialog |
+| `browser_get_content`   | Get page title / text / html                                                                              |
+| `browser_get_elements`  | Discover interactive elements                                                                             |
+| `browser_search_memory` | Search task memory                                                                                        |
+| `browser_stop_session`  | Stop Chrome session                                                                                       |
 
 ## For Browser Automation Tasks
 

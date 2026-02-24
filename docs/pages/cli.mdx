@@ -36,6 +36,9 @@ agentic-browser agent run navigate '{"url":"https://example.com"}'
 # Click
 agentic-browser agent run interact '{"action":"click","selector":"#login-btn"}'
 
+# Click with fallback selectors (tried if primary fails)
+agentic-browser agent run interact '{"action":"click","selector":"#login-btn","fallbackSelectors":["button[aria-label=\"Login\"]"]}'
+
 # Type into an input
 agentic-browser agent run interact '{"action":"type","selector":"input[name=q]","text":"search query"}'
 
@@ -44,6 +47,16 @@ agentic-browser agent run interact '{"action":"press","key":"Enter"}'
 
 # Wait for an element to appear
 agentic-browser agent run interact '{"action":"waitFor","selector":"#results","timeoutMs":5000}'
+
+# Browser navigation
+agentic-browser agent run interact '{"action":"goBack"}'
+agentic-browser agent run interact '{"action":"goForward"}'
+agentic-browser agent run interact '{"action":"refresh"}'
+
+# Handle JavaScript dialogs
+agentic-browser agent run interact '{"action":"dialog"}'                       # accept
+agentic-browser agent run interact '{"action":"dialog","text":"dismiss"}'      # dismiss
+agentic-browser agent run interact '{"action":"dialog","value":"my answer"}'   # respond to prompt
 ```
 
 ### Get Content

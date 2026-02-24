@@ -122,6 +122,19 @@ const result = await core.runCommand({
 
 // Toggle a checkbox or radio button
 { action: "toggle", selector: "input[type=checkbox]#agree" }
+
+// Browser navigation
+{ action: "goBack" }     // browser back button
+{ action: "goForward" }  // browser forward button
+{ action: "refresh" }    // reload the page
+
+// Handle JavaScript dialogs (alert/confirm/prompt)
+{ action: "dialog" }                        // accept
+{ action: "dialog", text: "dismiss" }       // dismiss
+{ action: "dialog", value: "my answer" }    // respond to prompt
+
+// Use fallback selectors for resilience
+{ action: "click", selector: "#login-btn", fallbackSelectors: ["button[aria-label=\"Login\"]"] }
 ```
 
 ## Get Page Content
@@ -166,6 +179,7 @@ const result = await core.getInteractiveElements({
 
 for (const el of result.elements) {
   console.log(`${el.role}: ${el.text} → ${el.selector}`);
+  // el.fallbackSelectors — alternate selectors for resilience
   // el.actions: ["click"] | ["click", "type", "press"] | ...
   // el.visible, el.enabled
   // el.href (links), el.inputType (inputs)
@@ -183,6 +197,7 @@ const memory = core.searchMemory({
   limit: 5,
 });
 // memory.results[0].selectorHints — CSS selectors that worked before
+// memory.results[0].selectorAliases — human-readable names mapped to selectors with fallbacks
 
 // Inspect a specific insight
 const insight = core.inspectMemory("insight-abc");
@@ -215,6 +230,7 @@ import type {
 ```ts
 interface InteractiveElement {
   selector: string; // CSS selector for interact()
+  fallbackSelectors?: string[]; // alternate selectors (up to 3)
   role: InteractiveElementRole; // "button" | "link" | "input" | ...
   tagName: string; // "button", "a", "input", ...
   text: string; // visible label (max 80 chars)

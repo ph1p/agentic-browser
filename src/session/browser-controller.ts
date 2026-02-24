@@ -18,11 +18,16 @@ export type InteractAction =
   | "scroll"
   | "hover"
   | "select"
-  | "toggle";
+  | "toggle"
+  | "goBack"
+  | "goForward"
+  | "refresh"
+  | "dialog";
 
 export interface InteractPayload {
   action: InteractAction;
   selector?: string;
+  fallbackSelectors?: string[];
   text?: string;
   key?: string;
   value?: string;
@@ -58,6 +63,7 @@ export type ElementAction = "click" | "type" | "select" | "toggle" | "press";
 
 export interface InteractiveElement {
   selector: string;
+  fallbackSelectors?: string[];
   role: InteractiveElementRole;
   tagName: string;
   text: string;
@@ -123,6 +129,7 @@ interface CdpClient {
     timeoutMs?: number,
   ): Promise<T>;
   waitForEvent<T = unknown>(method: string, timeoutMs?: number): Promise<T>;
+  onEvent?<T = unknown>(method: string, handler: (params: T) => void): () => void;
   close(): void;
 }
 
@@ -200,6 +207,22 @@ class CdpConnection implements CdpClient {
 
       this.ws.on("message", onMessage);
     });
+  }
+
+  onEvent<T = unknown>(method: string, handler: (params: T) => void): () => void {
+    const onMessage = (raw: WebSocket.RawData) => {
+      const message = JSON.parse(raw.toString("utf8")) as {
+        method?: string;
+        params?: T;
+      };
+      if (message.method === method) {
+        handler((message.params ?? {}) as T);
+      }
+    };
+    this.ws.on("message", onMessage);
+    return () => {
+      this.ws.off("message", onMessage);
+    };
   }
 
   close(): void {
@@ -345,10 +368,22 @@ function resolveDefaultProfileDir(): string {
   return path.join(home, ".config", "google-chrome");
 }
 
+interface DialogInfo {
+  type: string;
+  message: string;
+  defaultPrompt?: string;
+}
+
 export class ChromeCdpBrowserController implements BrowserController {
   private readonly connections = new Map<
     string,
-    { conn: CdpClient; enabled: { page: boolean; runtime: boolean }; lastUsedAt: number }
+    {
+      conn: CdpClient;
+      enabled: { page: boolean; runtime: boolean };
+      lastUsedAt: number;
+      pendingDialog?: DialogInfo;
+      dialogListenerAttached?: boolean;
+    }
   >();
 
   constructor(
@@ -425,6 +460,27 @@ export class ChromeCdpBrowserController implements BrowserController {
       );
     }
     if (promises.length) await Promise.all(promises);
+
+    // Set up persistent dialog listener (once per connection)
+    if (!cached.dialogListenerAttached && cached.conn.onEvent) {
+      cached.conn.onEvent<{
+        type: string;
+        message: string;
+        defaultPrompt?: string;
+      }>("Page.javascriptDialogOpening", (params) => {
+        cached.pendingDialog = {
+          type: params.type,
+          message: params.message,
+          defaultPrompt: params.defaultPrompt,
+        };
+        // Auto-accept alert dialogs (they only have OK, blocking is never useful)
+        if (params.type === "alert") {
+          cached.conn.send("Page.handleJavaScriptDialog", { accept: true }).catch(() => {});
+          cached.pendingDialog = undefined;
+        }
+      });
+      cached.dialogListenerAttached = true;
+    }
   }
 
   async launch(
@@ -555,13 +611,128 @@ export class ChromeCdpBrowserController implements BrowserController {
     });
   }
 
+  private async handleDialogAction(targetWsUrl: string, payload: InteractPayload): Promise<string> {
+    return await this.withRetry(targetWsUrl, async (conn) => {
+      await this.ensureEnabled(targetWsUrl);
+      const cached = this.connections.get(targetWsUrl);
+
+      // If no pending dialog, briefly wait for one (500ms)
+      if (!cached?.pendingDialog) {
+        try {
+          await conn.waitForEvent("Page.javascriptDialogOpening", 500);
+          // Give the listener time to populate pendingDialog
+          await new Promise((r) => setTimeout(r, 50));
+        } catch {
+          return "no dialog present";
+        }
+      }
+
+      const dialog = cached?.pendingDialog;
+      if (!dialog) {
+        return "no dialog present";
+      }
+
+      const dismiss = payload.text === "dismiss";
+      await conn.send("Page.handleJavaScriptDialog", {
+        accept: !dismiss,
+        promptText: payload.value,
+      });
+
+      const result = dismiss ? `dismissed ${dialog.type}` : `accepted ${dialog.type}`;
+      if (cached) cached.pendingDialog = undefined;
+      return `${result}: ${dialog.message}`;
+    });
+  }
+
   async interact(targetWsUrl: string, payload: InteractPayload): Promise<string> {
+    // Navigation actions — handled at CDP level, no in-page JS needed
+    if (payload.action === "goBack") {
+      return await this.withRetry(targetWsUrl, async (conn) => {
+        await this.ensureEnabled(targetWsUrl);
+        const navigatedPromise = conn
+          .waitForEvent<{ frame?: { url?: string } }>("Page.frameNavigated", 3000)
+          .catch(() => undefined);
+        await conn.send("Runtime.evaluate", {
+          expression: "history.back()",
+          returnByValue: true,
+        });
+        const event = await navigatedPromise;
+        if (!event) return "no history to go back";
+        // Wait for load
+        try {
+          await Promise.race([
+            conn.waitForEvent("Page.loadEventFired", 5000),
+            conn.waitForEvent("Page.frameStoppedLoading", 5000),
+          ]);
+        } catch {
+          // page may still be usable
+        }
+        return `navigated back to ${event.frame?.url ?? "previous page"}`;
+      });
+    }
+
+    if (payload.action === "goForward") {
+      return await this.withRetry(targetWsUrl, async (conn) => {
+        await this.ensureEnabled(targetWsUrl);
+        const navigatedPromise = conn
+          .waitForEvent<{ frame?: { url?: string } }>("Page.frameNavigated", 3000)
+          .catch(() => undefined);
+        await conn.send("Runtime.evaluate", {
+          expression: "history.forward()",
+          returnByValue: true,
+        });
+        const event = await navigatedPromise;
+        if (!event) return "no history to go forward";
+        try {
+          await Promise.race([
+            conn.waitForEvent("Page.loadEventFired", 5000),
+            conn.waitForEvent("Page.frameStoppedLoading", 5000),
+          ]);
+        } catch {
+          // page may still be usable
+        }
+        return `navigated forward to ${event.frame?.url ?? "next page"}`;
+      });
+    }
+
+    if (payload.action === "refresh") {
+      return await this.withRetry(targetWsUrl, async (conn) => {
+        await this.ensureEnabled(targetWsUrl);
+        await conn.send("Page.reload");
+        try {
+          await Promise.race([
+            conn.waitForEvent("Page.loadEventFired", 10000),
+            conn.waitForEvent("Page.frameStoppedLoading", 10000),
+          ]);
+        } catch {
+          // page may still be usable
+        }
+        return "page refreshed";
+      });
+    }
+
+    if (payload.action === "dialog") {
+      return await this.handleDialogAction(targetWsUrl, payload);
+    }
+
     const p = JSON.stringify(payload);
     const expression = `(async () => {
       const payload = ${p};
+
+      function resolveElement(selector, fallbacks) {
+        let el = selector ? document.querySelector(selector) : null;
+        if (el) return el;
+        if (fallbacks && fallbacks.length) {
+          for (const fb of fallbacks) {
+            el = document.querySelector(fb);
+            if (el) return el;
+          }
+        }
+        throw new Error('Selector not found');
+      }
+
       if (payload.action === 'click') {
-        const el = document.querySelector(payload.selector);
-        if (!el) throw new Error('Selector not found');
+        const el = resolveElement(payload.selector, payload.fallbackSelectors);
         const rect = el.getBoundingClientRect();
         if (rect.width === 0 && rect.height === 0) {
           throw new Error('Element has zero size – it may be hidden or not rendered');
@@ -579,8 +750,7 @@ export class ChromeCdpBrowserController implements BrowserController {
         return 'clicked';
       }
       if (payload.action === 'type') {
-        const el = document.querySelector(payload.selector);
-        if (!el) throw new Error('Selector not found');
+        const el = resolveElement(payload.selector, payload.fallbackSelectors);
         el.focus();
         el.value = payload.text ?? '';
         el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -615,8 +785,7 @@ export class ChromeCdpBrowserController implements BrowserController {
       }
       if (payload.action === 'scroll') {
         if (payload.selector) {
-          const el = document.querySelector(payload.selector);
-          if (!el) throw new Error('Selector not found');
+          const el = resolveElement(payload.selector, payload.fallbackSelectors);
           el.scrollBy({ left: payload.scrollX ?? 0, top: payload.scrollY ?? 0, behavior: 'smooth' });
           return 'scrolled element';
         }
@@ -624,8 +793,7 @@ export class ChromeCdpBrowserController implements BrowserController {
         return 'scrolled page';
       }
       if (payload.action === 'hover') {
-        const el = document.querySelector(payload.selector);
-        if (!el) throw new Error('Selector not found');
+        const el = resolveElement(payload.selector, payload.fallbackSelectors);
         const rect = el.getBoundingClientRect();
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
@@ -635,8 +803,7 @@ export class ChromeCdpBrowserController implements BrowserController {
         return 'hovered';
       }
       if (payload.action === 'select') {
-        const el = document.querySelector(payload.selector);
-        if (!el) throw new Error('Selector not found');
+        const el = resolveElement(payload.selector, payload.fallbackSelectors);
         if (el.tagName.toLowerCase() !== 'select') throw new Error('Element is not a <select>');
         el.value = payload.value ?? '';
         el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -644,8 +811,7 @@ export class ChromeCdpBrowserController implements BrowserController {
         return 'selected ' + el.value;
       }
       if (payload.action === 'toggle') {
-        const el = document.querySelector(payload.selector);
-        if (!el) throw new Error('Selector not found');
+        const el = resolveElement(payload.selector, payload.fallbackSelectors);
         el.click();
         const checked = el.checked !== undefined ? el.checked : el.getAttribute('aria-checked') === 'true';
         return 'toggled to ' + (checked ? 'checked' : 'unchecked');
@@ -888,34 +1054,62 @@ export class ChromeCdpBrowserController implements BrowserController {
         return value.replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
       }
 
+      function tryUniqueSelector(sel) {
+        try { return document.querySelectorAll(sel).length === 1 ? sel : null; }
+        catch { return null; }
+      }
+
       function buildSelector(el) {
         if (el.id) return '#' + CSS.escape(el.id);
 
         const name = el.getAttribute('name');
         if (name) {
           const tag = el.tagName.toLowerCase();
-          const sel = tag + '[name="' + escapeAttr(name) + '"]';
-          if (document.querySelectorAll(sel).length === 1) return sel;
+          const sel = tryUniqueSelector(tag + '[name="' + escapeAttr(name) + '"]');
+          if (sel) return sel;
         }
 
         const testId = el.getAttribute('data-testid') || el.getAttribute('data-test-id');
         if (testId) {
           const attr = el.hasAttribute('data-testid') ? 'data-testid' : 'data-test-id';
-          const sel = '[' + attr + '="' + escapeAttr(testId) + '"]';
-          if (document.querySelectorAll(sel).length === 1) return sel;
+          const sel = tryUniqueSelector('[' + attr + '="' + escapeAttr(testId) + '"]');
+          if (sel) return sel;
         }
 
         const ariaLabel = el.getAttribute('aria-label');
         if (ariaLabel) {
           const tag = el.tagName.toLowerCase();
-          const sel = tag + '[aria-label="' + escapeAttr(ariaLabel) + '"]';
-          if (document.querySelectorAll(sel).length === 1) return sel;
+          const sel = tryUniqueSelector(tag + '[aria-label="' + escapeAttr(ariaLabel) + '"]');
+          if (sel) return sel;
         }
 
+        const dataCy = el.getAttribute('data-cy');
+        if (dataCy) {
+          const sel = tryUniqueSelector('[data-cy="' + escapeAttr(dataCy) + '"]');
+          if (sel) return sel;
+        }
+
+        const dataTest = el.getAttribute('data-test');
+        if (dataTest) {
+          const sel = tryUniqueSelector('[data-test="' + escapeAttr(dataTest) + '"]');
+          if (sel) return sel;
+        }
+
+        const role = el.getAttribute('role');
+        if (role && ariaLabel) {
+          const sel = tryUniqueSelector('[role="' + escapeAttr(role) + '"][aria-label="' + escapeAttr(ariaLabel) + '"]');
+          if (sel) return sel;
+        }
+
+        // Path fallback — anchor at nearest ancestor with an id for shorter selectors
         const parts = [];
         let current = el;
         while (current && current !== document.documentElement) {
           const tag = current.tagName.toLowerCase();
+          if (current !== el && current.id) {
+            parts.unshift('#' + CSS.escape(current.id));
+            break;
+          }
           const parent = current.parentElement;
           if (!parent) { parts.unshift(tag); break; }
           const siblings = Array.from(parent.children).filter(
@@ -930,6 +1124,50 @@ export class ChromeCdpBrowserController implements BrowserController {
           current = parent;
         }
         return parts.join(' > ');
+      }
+
+      function buildFallbackSelectors(el, primarySelector) {
+        const fallbacks = [];
+        const candidates = [];
+
+        if (el.id) candidates.push('#' + CSS.escape(el.id));
+
+        const name = el.getAttribute('name');
+        if (name) {
+          const tag = el.tagName.toLowerCase();
+          const sel = tag + '[name="' + escapeAttr(name) + '"]';
+          candidates.push(sel);
+        }
+
+        const testId = el.getAttribute('data-testid') || el.getAttribute('data-test-id');
+        if (testId) {
+          const attr = el.hasAttribute('data-testid') ? 'data-testid' : 'data-test-id';
+          candidates.push('[' + attr + '="' + escapeAttr(testId) + '"]');
+        }
+
+        const ariaLabel = el.getAttribute('aria-label');
+        if (ariaLabel) {
+          const tag = el.tagName.toLowerCase();
+          candidates.push(tag + '[aria-label="' + escapeAttr(ariaLabel) + '"]');
+        }
+
+        const dataCy = el.getAttribute('data-cy');
+        if (dataCy) candidates.push('[data-cy="' + escapeAttr(dataCy) + '"]');
+
+        const dataTest = el.getAttribute('data-test');
+        if (dataTest) candidates.push('[data-test="' + escapeAttr(dataTest) + '"]');
+
+        const role = el.getAttribute('role');
+        if (role && ariaLabel) {
+          candidates.push('[role="' + escapeAttr(role) + '"][aria-label="' + escapeAttr(ariaLabel) + '"]');
+        }
+
+        for (const sel of candidates) {
+          if (sel === primarySelector) continue;
+          if (tryUniqueSelector(sel)) fallbacks.push(sel);
+          if (fallbacks.length >= 3) break;
+        }
+        return fallbacks;
       }
 
       function isVisible(el) {
@@ -995,8 +1233,9 @@ export class ChromeCdpBrowserController implements BrowserController {
         totalFound++;
         if (results.length >= limit) continue;
 
+        const primarySelector = buildSelector(el);
         const entry = {
-          selector: buildSelector(el),
+          selector: primarySelector,
           role,
           tagName: el.tagName.toLowerCase(),
           text: getText(el),
@@ -1004,6 +1243,9 @@ export class ChromeCdpBrowserController implements BrowserController {
           visible: vis,
           enabled: isEnabled(el),
         };
+
+        const fb = buildFallbackSelectors(el, primarySelector);
+        if (fb.length) entry.fallbackSelectors = fb;
 
         if (role === 'link' && el.href) entry.href = el.href;
         if (role === 'input') entry.inputType = (el.type || 'text').toLowerCase();
@@ -1093,10 +1335,36 @@ export class MockBrowserController implements BrowserController {
     page.title = url;
     page.text = `Content of ${url}`;
     page.html = `<html><body>${page.text}</body></html>`;
+    // Track navigation history for goBack/goForward
+    this.history.splice(this.historyIndex + 1);
+    this.history.push(url);
+    this.historyIndex = this.history.length - 1;
     return url;
   }
 
-  async interact(_cdpUrl: string, payload: InteractPayload): Promise<string> {
+  private readonly history: string[] = [];
+  private historyIndex = -1;
+
+  async interact(cdpUrl: string, payload: InteractPayload): Promise<string> {
+    if (payload.action === "goBack") {
+      if (this.historyIndex <= 0) return "no history to go back";
+      this.historyIndex--;
+      const page = this.pages.get(cdpUrl);
+      if (page) page.url = this.history[this.historyIndex] ?? page.url;
+      return `navigated back to ${page?.url ?? "previous page"}`;
+    }
+    if (payload.action === "goForward") {
+      if (this.historyIndex >= this.history.length - 1) return "no history to go forward";
+      this.historyIndex++;
+      const page = this.pages.get(cdpUrl);
+      if (page) page.url = this.history[this.historyIndex] ?? page.url;
+      return `navigated forward to ${page?.url ?? "next page"}`;
+    }
+    if (payload.action === "refresh") return "page refreshed";
+    if (payload.action === "dialog") {
+      const dismiss = payload.text === "dismiss";
+      return dismiss ? "dismissed confirm: mock dialog" : "accepted confirm: mock dialog";
+    }
     return `interacted:${payload.action}`;
   }
 

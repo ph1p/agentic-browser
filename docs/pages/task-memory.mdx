@@ -33,6 +33,7 @@ Evidence is grouped into insights, each representing a learned pattern:
 - **siteDomain** — which site
 - **actionRecipe** — sequence of steps that worked
 - **selectorHints** — CSS selectors that proved reliable
+- **selectorAliases** — human-readable names mapped to selectors with fallbacks (auto-generated after 3+ successes with high confidence)
 - **confidence** — success ratio (0-1)
 - **freshness** — how current the insight is
 
@@ -127,9 +128,9 @@ const stats = core.memoryStats();
 For an LLM working with a known site:
 
 1. **Search first:** `memory-search "task:domain.com"` — check if there are known patterns
-2. **Use selector hints:** If memory returns results with high confidence and fresh status, use the `selectorHints` directly
-3. **Fall back to discovery:** If no memory or stale results, use `elements` to discover fresh selectors
-4. **Let memory record:** Successful executions are automatically recorded — no manual step needed
+2. **Use selector hints and aliases:** If memory returns results with high confidence and fresh status, use the `selectorHints` directly. `selectorAliases` provide human-readable names (e.g. "Submit") mapped to selectors with fallbacks — pass these as `fallbackSelectors` to `browser_interact`.
+3. **Fall back to discovery:** If no memory or stale results, use `elements` to discover fresh selectors (which also include `fallbackSelectors`)
+4. **Let memory record:** Successful executions are automatically recorded — no manual step needed. After 3+ successes with confidence ≥ 0.8, selector aliases are auto-generated.
 5. **Verify when needed:** If a site redesign breaks selectors, the freshness system will detect it and degrade the insight
 
 ## Storage

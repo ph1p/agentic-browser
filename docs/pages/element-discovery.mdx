@@ -40,11 +40,14 @@ const result = await core.getInteractiveElements({
 
 ## Output Structure
 
+Each element includes a primary `selector` and optional `fallbackSelectors` — alternate unique selectors that can be passed to `browser_interact` for automatic retry if the primary selector breaks.
+
 ```json
 {
   "elements": [
     {
       "selector": "#login-btn",
+      "fallbackSelectors": ["button[aria-label=\"Sign In\"]", "[data-testid=\"login\"]"],
       "role": "button",
       "tagName": "button",
       "text": "Sign In",
@@ -100,11 +103,18 @@ Each element gets a unique CSS selector, generated with this priority:
 
 1. **`#id`** — if the element has an `id` attribute
 2. **`tag[name="..."]`** — if `name` is unique
-3. **`[data-testid="..."]`** — if present
+3. **`[data-testid="..."]`** or **`[data-test-id="..."]`** — testing attributes
 4. **`tag[aria-label="..."]`** — if unique
-5. **Composite path** — `div > ul > li:nth-of-type(3) > button` (always works)
+5. **`[data-cy="..."]`** — Cypress testing convention
+6. **`[data-test="..."]`** — generic testing convention
+7. **`[role="..."][aria-label="..."]`** — role + aria-label combo
+8. **Composite path** — anchored at nearest ancestor with `id` (e.g. `#container > div > button`) instead of walking to the root
 
 The generated selectors are designed to be stable and usable directly with the `interact` command.
+
+### Fallback Selectors
+
+In addition to the primary selector, each element may include up to 3 `fallbackSelectors` — alternate unique selectors derived from other attributes. When you pass `fallbackSelectors` to `browser_interact`, the system automatically tries each one if the primary selector fails. This provides resilience when sites update their markup.
 
 ## Roles and Actions
 
@@ -137,8 +147,8 @@ The typical workflow:
 # 1. See what's on the page
 agentic-browser agent elements --roles button,link
 
-# 2. Use a selector from the result
-agentic-browser agent run interact '{"action":"click","selector":"#login-btn"}'
+# 2. Use a selector from the result (with fallbacks for resilience)
+agentic-browser agent run interact '{"action":"click","selector":"#login-btn","fallbackSelectors":["button[aria-label=\"Login\"]"]}'
 
 # 3. After navigation, discover again
 agentic-browser agent elements

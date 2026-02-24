@@ -19,6 +19,12 @@ export const EvidenceRecordSchema = z.object({
   recordedAt: z.string().datetime(),
 });
 
+export const SelectorAliasSchema = z.object({
+  alias: z.string().min(1),
+  selector: z.string().min(1),
+  fallbackSelectors: z.array(z.string()).default([]),
+});
+
 export const TaskInsightSchema = z.object({
   insightId: z.string().min(1),
   taskIntent: z.string().min(1),
@@ -37,6 +43,7 @@ export const TaskInsightSchema = z.object({
   updatedAt: z.string().datetime(),
   supersedes: z.string().optional(),
   evidence: z.array(EvidenceRecordSchema),
+  selectorAliases: z.array(SelectorAliasSchema).default([]),
 });
 
 export const MemoryStateSchema = z.object({
@@ -46,6 +53,7 @@ export const MemoryStateSchema = z.object({
 export type InsightFreshness = z.infer<typeof InsightFreshnessSchema>;
 export type TaskStep = z.infer<typeof TaskStepSchema>;
 export type EvidenceRecord = z.infer<typeof EvidenceRecordSchema>;
+export type SelectorAlias = z.infer<typeof SelectorAliasSchema>;
 export type TaskInsight = z.infer<typeof TaskInsightSchema>;
 export type MemoryState = z.infer<typeof MemoryStateSchema>;
 
@@ -57,5 +65,6 @@ export interface MemorySearchResult {
   freshness: InsightFreshness;
   lastVerifiedAt: string;
   selectorHints: string[];
+  selectorAliases: SelectorAlias[];
   score: number;
 }

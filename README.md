@@ -132,7 +132,7 @@ agentic-browser agent elements --roles button,link,input --visible-only --limit 
 agentic-browser agent elements --selector "#main-content"
 ```
 
-Returns a JSON array of elements with CSS selectors usable in `agent run interact`:
+Returns a JSON array of elements with CSS selectors and fallback selectors usable in `agent run interact`:
 
 ```json
 {
@@ -141,6 +141,7 @@ Returns a JSON array of elements with CSS selectors usable in `agent run interac
   "elements": [
     {
       "selector": "#login-btn",
+      "fallbackSelectors": ["button[aria-label=\"Login\"]"],
       "role": "button",
       "tagName": "button",
       "text": "Login",
@@ -211,6 +212,12 @@ More `interact` actions:
 - `{"action":"type","selector":"input[name=q]","text":"innoq"}`
 - `{"action":"press","key":"Enter"}`
 - `{"action":"waitFor","selector":"main","timeoutMs":4000}`
+- `{"action":"goBack"}` — browser back
+- `{"action":"goForward"}` — browser forward
+- `{"action":"refresh"}` — reload page
+- `{"action":"dialog"}` — accept a JS dialog (alert/confirm/prompt)
+- `{"action":"dialog","text":"dismiss"}` — dismiss a dialog
+- `{"action":"dialog","value":"answer"}` — respond to a prompt dialog
 
 ### 4. Read Page Content
 

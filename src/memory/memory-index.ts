@@ -1,4 +1,4 @@
-import type { MemorySearchResult, TaskInsight } from "./memory-schemas.js";
+import type { MemorySearchResult, SelectorAlias, TaskInsight } from "./memory-schemas.js";
 
 interface SearchInput {
   taskIntent: string;
@@ -39,6 +39,10 @@ function buildSelectorHints(insight: TaskInsight): string[] {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([selector]) => selector);
+}
+
+function buildSelectorAliases(insight: TaskInsight): SelectorAlias[] {
+  return insight.selectorAliases ?? [];
 }
 
 function selectorSignal(insight: TaskInsight): number {
@@ -92,6 +96,7 @@ function scoreInsight(
     freshness: insight.freshness,
     lastVerifiedAt: insight.lastVerifiedAt,
     selectorHints: buildSelectorHints(insight),
+    selectorAliases: buildSelectorAliases(insight),
     score,
   } satisfies MemorySearchResult;
 }

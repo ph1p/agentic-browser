@@ -46,4 +46,14 @@ describe("staleness detector", () => {
     expect(fresh.freshness).toBe("fresh");
     expect(fresh.staleStrikeCount).toBe(0);
   });
+
+  it("treats navigation/dialog action errors as non-structural", () => {
+    for (const msg of ["no history to go back", "no history to go forward", "no dialog present"]) {
+      const signal = detectStalenessSignal(msg);
+      expect(signal.isStructural).toBe(false);
+      const result = applyFailure(insight(), signal);
+      expect(result.freshness).toBe("fresh");
+      expect(result.staleStrikeCount).toBe(0);
+    }
+  });
 });

@@ -73,4 +73,28 @@ describe("memory ranking", () => {
     expect(results[0]?.insightId).toBe("selector-rich");
     expect(results[0]?.selectorHints).toContain("#menu");
   });
+
+  it("includes selectorAliases from the insight in search results", () => {
+    const index = new MemoryIndex();
+    const aliases = [
+      { alias: "menu", selector: "#menu", fallbackSelectors: [".main-menu"] },
+      { alias: "Submit", selector: 'button[aria-label="Submit"]', fallbackSelectors: [] },
+    ];
+    const results = index.search(
+      [insight({ insightId: "with-aliases", selectorAliases: aliases })],
+      { taskIntent: "navigate:example.com", siteDomain: "example.com" },
+    );
+
+    expect(results[0]?.selectorAliases).toEqual(aliases);
+  });
+
+  it("returns empty selectorAliases when insight has none", () => {
+    const index = new MemoryIndex();
+    const results = index.search([insight({ insightId: "no-aliases" })], {
+      taskIntent: "navigate:example.com",
+      siteDomain: "example.com",
+    });
+
+    expect(results[0]?.selectorAliases).toEqual([]);
+  });
 });

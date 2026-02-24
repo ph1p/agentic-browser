@@ -32,4 +32,73 @@ describe("US1 integration: content + interact", () => {
     });
     expect(interaction.resultStatus).toBe("success");
   });
+
+  it("supports goBack, goForward, and refresh actions", async () => {
+    const runtime = createDefaultRuntime();
+    const started = await runSessionStart(runtime, { browser: "chrome" });
+
+    await runCommand(runtime, {
+      sessionId: started.sessionId,
+      commandId: "nav-1",
+      type: "navigate",
+      payload: { url: "https://example.com/page1" },
+    });
+
+    await runCommand(runtime, {
+      sessionId: started.sessionId,
+      commandId: "nav-2",
+      type: "navigate",
+      payload: { url: "https://example.com/page2" },
+    });
+
+    const back = await runCommand(runtime, {
+      sessionId: started.sessionId,
+      commandId: "cmd-back",
+      type: "interact",
+      payload: { action: "goBack" },
+    });
+    expect(back.resultStatus).toBe("success");
+    expect(back.resultMessage).toContain("navigated back");
+
+    const forward = await runCommand(runtime, {
+      sessionId: started.sessionId,
+      commandId: "cmd-forward",
+      type: "interact",
+      payload: { action: "goForward" },
+    });
+    expect(forward.resultStatus).toBe("success");
+    expect(forward.resultMessage).toContain("navigated forward");
+
+    const refresh = await runCommand(runtime, {
+      sessionId: started.sessionId,
+      commandId: "cmd-refresh",
+      type: "interact",
+      payload: { action: "refresh" },
+    });
+    expect(refresh.resultStatus).toBe("success");
+    expect(refresh.resultMessage).toContain("refreshed");
+  });
+
+  it("supports dialog action", async () => {
+    const runtime = createDefaultRuntime();
+    const started = await runSessionStart(runtime, { browser: "chrome" });
+
+    const accept = await runCommand(runtime, {
+      sessionId: started.sessionId,
+      commandId: "cmd-dialog-accept",
+      type: "interact",
+      payload: { action: "dialog" },
+    });
+    expect(accept.resultStatus).toBe("success");
+    expect(accept.resultMessage).toContain("accepted");
+
+    const dismiss = await runCommand(runtime, {
+      sessionId: started.sessionId,
+      commandId: "cmd-dialog-dismiss",
+      type: "interact",
+      payload: { action: "dialog", text: "dismiss" },
+    });
+    expect(dismiss.resultStatus).toBe("success");
+    expect(dismiss.resultMessage).toContain("dismissed");
+  });
 });

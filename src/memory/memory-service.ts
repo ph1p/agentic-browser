@@ -6,6 +6,7 @@ import { TaskInsightStore } from "./task-insight-store.js";
 import type {
   EvidenceRecord,
   MemorySearchResult,
+  SelectorAlias,
   TaskInsight,
   TaskStep,
 } from "./memory-schemas.js";
@@ -112,7 +113,7 @@ export class MemoryService {
 
     if (!matched) {
       const now = new Date().toISOString();
-      const created: TaskInsight = {
+      let created: TaskInsight = {
         insightId: crypto.randomUUID(),
         taskIntent: input.taskIntent,
         siteDomain: input.siteDomain,
@@ -129,7 +130,9 @@ export class MemoryService {
         createdAt: now,
         updatedAt: now,
         evidence: [evidence],
+        selectorAliases: [],
       };
+      created = this.maybeGenerateAliases(created);
       this.store.upsert(created);
       this.invalidateSearchCache();
       return created;
@@ -145,7 +148,7 @@ export class MemoryService {
 
     if (matched.freshness === "suspect" || matched.freshness === "stale") {
       const now = new Date().toISOString();
-      const versioned: TaskInsight = {
+      let versioned: TaskInsight = {
         ...refreshed,
         insightId: crypto.randomUUID(),
         supersedes: matched.insightId,
@@ -153,14 +156,16 @@ export class MemoryService {
         createdAt: now,
         updatedAt: now,
       };
+      versioned = this.maybeGenerateAliases(versioned);
       this.store.upsert(versioned);
       this.invalidateSearchCache();
       return versioned;
     }
 
-    this.store.upsert(refreshed);
+    const withAliases = this.maybeGenerateAliases(refreshed);
+    this.store.upsert(withAliases);
     this.invalidateSearchCache();
-    return refreshed;
+    return withAliases;
   }
 
   recordFailure(input: RecordExecutionInput, errorMessage: string): TaskInsight | undefined {
@@ -222,6 +227,67 @@ export class MemoryService {
       url: input.url,
       recordedAt: new Date().toISOString(),
     };
+  }
+
+  private maybeGenerateAliases(insight: TaskInsight): TaskInsight {
+    if (insight.confidence < 0.8 || insight.successCount < 3) {
+      return insight;
+    }
+
+    const aliasMap = new Map<string, SelectorAlias>();
+
+    // Preserve existing aliases
+    for (const existing of insight.selectorAliases ?? []) {
+      aliasMap.set(existing.selector, existing);
+    }
+
+    // Derive aliases from recipe selectors and successful evidence selectors
+    const selectors = new Set<string>();
+    for (const step of insight.actionRecipe) {
+      if (step.selector) selectors.add(step.selector);
+    }
+    for (const ev of insight.evidence) {
+      if (ev.selector && ev.result === "success") selectors.add(ev.selector);
+    }
+
+    for (const selector of selectors) {
+      if (aliasMap.has(selector)) continue;
+      const alias = this.deriveAliasName(selector);
+      if (alias) {
+        aliasMap.set(selector, { alias, selector, fallbackSelectors: [] });
+      }
+      if (aliasMap.size >= 10) break;
+    }
+
+    return { ...insight, selectorAliases: [...aliasMap.values()].slice(0, 10) };
+  }
+
+  private deriveAliasName(selector: string): string | undefined {
+    // #id → id
+    const idMatch = selector.match(/^#([\w-]+)$/);
+    if (idMatch) return idMatch[1]!.replace(/[-_]/g, " ");
+
+    // [name="value"] → value
+    const nameMatch = selector.match(/\[name="([^"]+)"\]/);
+    if (nameMatch) return nameMatch[1]!;
+
+    // [aria-label="value"] → value
+    const ariaMatch = selector.match(/\[aria-label="([^"]+)"\]/);
+    if (ariaMatch) return ariaMatch[1]!;
+
+    // [data-testid="value"] → value
+    const testIdMatch = selector.match(/\[data-testid="([^"]+)"\]/);
+    if (testIdMatch) return testIdMatch[1]!;
+
+    // [data-cy="value"] → value
+    const cyMatch = selector.match(/\[data-cy="([^"]+)"\]/);
+    if (cyMatch) return cyMatch[1]!;
+
+    // [data-test="value"] → value
+    const testMatch = selector.match(/\[data-test="([^"]+)"\]/);
+    if (testMatch) return testMatch[1]!;
+
+    return undefined;
   }
 
   private mergeRecipe(recipe: TaskStep[], step: TaskStep): TaskStep[] {
