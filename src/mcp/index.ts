@@ -250,7 +250,7 @@ server.tool(
     });
 
     // Strip redundant fields to reduce token usage
-    const compactElements = result.elements.map((el: Record<string, unknown>) => {
+    const compactElements = result.elements.map((el) => {
       const compact: Record<string, unknown> = { ...el };
       // visible is always true when visibleOnly is true (the default)
       if (visibleOnly) delete compact.visible;
@@ -292,7 +292,7 @@ server.tool(
     const result = getCore().searchMemory({ taskIntent, siteDomain, limit });
 
     // Post-process to reduce token usage
-    const compactResults = result.results.map((r: Record<string, unknown>) => {
+    const compactResults = result.results.map((r) => {
       const compact: Record<string, unknown> = { ...r };
       // score is redundant — results are already sorted by relevance
       delete compact.score;

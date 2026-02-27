@@ -22,6 +22,7 @@ function insight(overrides: Partial<TaskInsight>): TaskInsight {
     createdAt: now,
     updatedAt: now,
     evidence: [],
+    selectorAliases: [],
     ...overrides,
   };
 }

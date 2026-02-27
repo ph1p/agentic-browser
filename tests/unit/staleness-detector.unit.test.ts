@@ -26,6 +26,7 @@ function insight(): TaskInsight {
     createdAt: now,
     updatedAt: now,
     evidence: [],
+    selectorAliases: [],
   };
 }
 
