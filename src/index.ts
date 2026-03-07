@@ -11,6 +11,7 @@ export type {
   InteractiveElementRole,
   InteractiveElementsOptions,
   InteractiveElementsResult,
+  DismissCookieBannerResult,
   ElementAction,
   LaunchOptions,
 } from "./session/browser-controller.js";

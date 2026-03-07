@@ -96,6 +96,12 @@ export interface LaunchOptions {
   userAgent?: string;
 }
 
+export interface DismissCookieBannerResult {
+  dismissed: boolean;
+  method?: "a11y" | "selector" | "text";
+  detail?: string;
+}
+
 export interface BrowserController {
   launch(
     sessionId: string,
@@ -112,6 +118,7 @@ export interface BrowserController {
     targetWsUrl: string,
     options: InteractiveElementsOptions,
   ): Promise<InteractiveElementsResult>;
+  dismissCookieBanner(targetWsUrl: string): Promise<DismissCookieBannerResult>;
   terminate(pid: number): void;
   closeConnection?(targetWsUrl: string): void;
 }
@@ -1284,6 +1291,195 @@ export class ChromeCdpBrowserController implements BrowserController {
     });
   }
 
+  /**
+   * Best-effort cookie/consent banner dismissal.
+   *
+   * Strategy (in order):
+   * 1. A11y tree scan — find buttons with consent-like accessible names
+   * 2. CSS selector scan — check common consent framework IDs/classes
+   * 3. Text-based scan — find visible buttons matching accept/agree patterns
+   *
+   * Returns silently on failure — never blocks navigation.
+   */
+  async dismissCookieBanner(targetWsUrl: string): Promise<DismissCookieBannerResult> {
+    // Strategy 1: Use the accessibility tree to find consent buttons.
+    // This is more robust than DOM selectors because it works regardless of
+    // the CSS framework, shadow DOM, or obfuscated class names.
+    try {
+      const a11yResult = await this.dismissViaA11y(targetWsUrl);
+      if (a11yResult.dismissed) return a11yResult;
+    } catch {
+      // a11y approach failed — fall through to DOM-based fallbacks
+    }
+
+    // Strategy 2+3: DOM-based selector scan + text-based button scan
+    const expression = `(() => {
+      // Common cookie-consent button selectors (ordered by specificity)
+      const selectors = [
+        '#onetrust-accept-btn-handler',
+        '#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll',
+        '#CybotCookiebotDialogBodyButtonAccept',
+        '#accept-cookies', '#acceptCookies',
+        '#cookie-accept', '#cookieAccept',
+        '#gdpr-accept', '#consent-accept',
+        '#uc-btn-accept-banner',
+        '.cc-accept', '.cc-btn.cc-dismiss',
+        '.cookie-consent-accept', '.cookie-accept-btn',
+        '.js-cookie-accept', '.js-accept-cookies',
+        '.consent-accept', '.consent-btn-accept',
+        '.gdpr-accept',
+        '[data-testid="cookie-accept"]',
+        '[data-action="accept-cookies"]',
+        '[data-cookiefirst-action="accept"]',
+      ];
+
+      for (const sel of selectors) {
+        const el = document.querySelector(sel);
+        if (el && el.offsetParent !== null) {
+          el.click();
+          return JSON.stringify({ dismissed: true, method: 'selector', detail: sel });
+        }
+      }
+
+      // Text-based fallback: find visible buttons with consent text
+      const patterns = [
+        /^accept\\s*(all)?\\s*(cookies)?$/i,
+        /^(alle\\s+)?akzeptieren$/i,
+        /^(i\\s+)?agree$/i,
+        /^allow\\s*(all)?\\s*(cookies)?$/i,
+        /^(alle\\s+)?zustimmen$/i,
+        /^got\\s*it$/i,
+        /^ok$/i,
+        /^consent$/i,
+        /^(j')?accepte(r)?$/i,
+        /^(tout\\s+)?accepter$/i,
+      ];
+      const candidates = [
+        ...document.querySelectorAll('button'),
+        ...document.querySelectorAll('a[role="button"]'),
+        ...document.querySelectorAll('[role="button"]'),
+      ];
+      for (const el of candidates) {
+        if (!el.offsetParent) continue;
+        const text = (el.textContent || '').trim();
+        if (text.length > 40) continue;
+        for (const pat of patterns) {
+          if (pat.test(text)) {
+            el.click();
+            return JSON.stringify({ dismissed: true, method: 'text', detail: text });
+          }
+        }
+      }
+
+      return JSON.stringify({ dismissed: false });
+    })()`;
+
+    try {
+      return await this.withRetry(targetWsUrl, async (conn) => {
+        await this.ensureEnabled(targetWsUrl);
+        const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
+          expression,
+          returnByValue: true,
+        });
+        const raw = result.result.value ?? '{"dismissed":false}';
+        try {
+          return JSON.parse(raw) as DismissCookieBannerResult;
+        } catch {
+          return { dismissed: false };
+        }
+      });
+    } catch {
+      return { dismissed: false };
+    }
+  }
+
+  /**
+   * Use the CDP Accessibility tree to find and click consent buttons.
+   * This works even when consent banners use shadow DOM, iframes, or obfuscated class names.
+   */
+  private async dismissViaA11y(targetWsUrl: string): Promise<DismissCookieBannerResult> {
+    return await this.withRetry(targetWsUrl, async (conn) => {
+      await conn.send("Accessibility.enable");
+
+      const { nodes } = await conn.send<{
+        nodes: Array<{
+          nodeId: string;
+          parentId?: string;
+          backendDOMNodeId?: number;
+          role?: { value: string };
+          name?: { value: string };
+          properties?: Array<{ name: string; value: { value: unknown } }>;
+          ignored?: boolean;
+        }>;
+      }>("Accessibility.getFullAXTree");
+
+      // Consent-related name patterns (EN, DE, FR, ES, IT, NL, PT)
+      const consentPatterns = [
+        /^accept\s*(all)?\s*(cookies)?$/i,
+        /^(i\s+)?agree(\s+to\s+all)?$/i,
+        /^allow\s*(all)?\s*(cookies)?$/i,
+        /^got\s*it$/i, /^ok$/i, /^consent$/i,
+        /^(alle\s+)?akzeptieren$/i,
+        /^(alle\s+)?zustimmen$/i, /^einverstanden$/i,
+        /^(j')?accepte(r)?(\s+tout)?$/i, /^(tout\s+)?accepter$/i,
+        /^aceptar(\s+todo)?$/i,
+        /^accetta(\s+tutto)?$/i,
+        /^accepteren$/i, /^alle\s+accepteren$/i,
+        /^aceitar(\s+tudo)?$/i,
+      ];
+
+      // Find button/link nodes whose accessible name matches consent patterns
+      const candidates: Array<{ nodeId: string; backendDOMNodeId: number; name: string }> = [];
+      for (const node of nodes) {
+        if (node.ignored) continue;
+        const role = node.role?.value;
+        if (role !== "button" && role !== "link") continue;
+        const name = node.name?.value?.trim();
+        if (!name || name.length > 50) continue;
+
+        // Check if the button is focusable/not disabled
+        const isDisabled = node.properties?.some(
+          (p) => p.name === "disabled" && p.value.value === true,
+        );
+        if (isDisabled) continue;
+
+        for (const pat of consentPatterns) {
+          if (pat.test(name) && node.backendDOMNodeId) {
+            candidates.push({ nodeId: node.nodeId, backendDOMNodeId: node.backendDOMNodeId, name });
+            break;
+          }
+        }
+      }
+
+      if (candidates.length === 0) {
+        return { dismissed: false };
+      }
+
+      // Click the first matching candidate via CDP DOM.focus + Runtime.evaluate
+      const target = candidates[0];
+      try {
+        // Resolve the DOM node to get a JS object reference
+        const { object } = await conn.send<{ object: { objectId?: string } }>(
+          "DOM.resolveNode",
+          { backendNodeId: target.backendDOMNodeId },
+        );
+        if (object?.objectId) {
+          // Call click() on the resolved object
+          await conn.send("Runtime.callFunctionOn", {
+            objectId: object.objectId,
+            functionDeclaration: "function() { this.click(); }",
+            returnByValue: true,
+          });
+          return { dismissed: true, method: "a11y" as const, detail: target.name };
+        }
+      } catch {
+        // If DOM.resolveNode fails, try clicking via JS selector fallback
+      }
+
+      return { dismissed: false };
+    });
+  }
+
   terminate(pid: number): void {
     if (pid === 0) return; // external browser — don't kill
     try {
@@ -1381,6 +1577,12 @@ export class MockBrowserController implements BrowserController {
     _options: InteractiveElementsOptions,
   ): Promise<InteractiveElementsResult> {
     return { elements: [], totalFound: 0, truncated: false };
+  }
+
+  async dismissCookieBanner(
+    _targetWsUrl: string,
+  ): Promise<DismissCookieBannerResult> {
+    return { dismissed: false };
   }
 
   terminate(_pid: number): void {}

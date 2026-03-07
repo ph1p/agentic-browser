@@ -13,6 +13,7 @@ import type {
 } from "../lib/domain-schemas.js";
 import {
   type BrowserController,
+  type DismissCookieBannerResult,
   type InteractPayload,
   type InteractiveElementsOptions,
   type PageContentOptions,
@@ -250,6 +251,11 @@ export class SessionManager {
   async getInteractiveElements(sessionId: string, options: InteractiveElementsOptions) {
     const record = await this.ensureSession(sessionId);
     return await this.browser.getInteractiveElements(record.targetWsUrl, options);
+  }
+
+  async dismissCookieBanner(sessionId: string): Promise<DismissCookieBannerResult> {
+    const record = await this.ensureSession(sessionId);
+    return await this.browser.dismissCookieBanner(record.targetWsUrl);
   }
 
   setStatus(status: SessionStatus, reason: string): Session {

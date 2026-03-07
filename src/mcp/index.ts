@@ -323,6 +323,19 @@ server.tool(
 );
 
 server.tool(
+  "browser_dismiss_cookies",
+  "Dismiss cookie consent banners on the current page. Uses the accessibility tree first (most robust), then falls back to known CSS selectors and text-based button matching. Supports banners in English, German, French, Spanish, Italian, Dutch, and Portuguese. Call this after navigating to a new page. A session is auto-started if needed.",
+  {
+    sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
+  },
+  async ({ sessionId }) => {
+    const sid = await resolveSession(sessionId);
+    const result = await getCore().dismissCookieBanner(sid);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+  },
+);
+
+server.tool(
   "browser_stop_session",
   "Stop the browser session and terminate Chrome. The next browser tool call will auto-start a fresh session.",
   {

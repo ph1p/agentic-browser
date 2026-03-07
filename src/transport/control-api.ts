@@ -50,6 +50,10 @@ export class ControlApi {
     return await this.sessions.getInteractiveElements(sessionId, options);
   }
 
+  async dismissCookieBanner(sessionId: string) {
+    return await this.sessions.dismissCookieBanner(sessionId);
+  }
+
   listEvents(sessionId: string, limit = 100) {
     return { events: this.eventStore.list(sessionId, limit) };
   }

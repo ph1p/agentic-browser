@@ -75,6 +75,10 @@ export class AgenticBrowserCore {
     } satisfies InteractiveElementsOptions);
   }
 
+  async dismissCookieBanner(sessionId: string) {
+    return await this.api.dismissCookieBanner(sessionId);
+  }
+
   async restartSession(sessionId: string) {
     return await this.api.restartSession(sessionId);
   }
