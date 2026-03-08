@@ -152,7 +152,7 @@ Returns a JSON array of elements with CSS selectors and fallback selectors usabl
 }
 ```
 
-MCP responses are compact — `visible`, `actions`, and `tagName` are omitted to reduce token usage. The full element shape is available via the programmatic API.
+MCP responses are compact — `visible`, `actions`, and `tagName` are omitted to reduce token usage, and `enabled` is omitted when it is `true`. Responses also include a `summary` block with `countsByRole` and `primaryActions` so an LLM can identify the main controls faster. The full element shape is available via the programmatic API.
 
 ````
 
