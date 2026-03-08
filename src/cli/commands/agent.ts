@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { CommandType } from "../../lib/domain-schemas.js";
+import type { InteractPayload } from "../../session/browser-controller.js";
 import type { Runtime } from "../runtime.js";
 
 const STATE_FILE_NAME = "agent-state.json";
@@ -73,7 +74,7 @@ export async function agentStop(runtime: Runtime) {
   return { ok: true, action: "stop", sessionId };
 }
 
-export async function agentRun(
+async function executeAgentCommand(
   runtime: Runtime,
   input: { type: CommandType; payload: Record<string, unknown> },
 ) {
@@ -92,15 +93,75 @@ export async function agentRun(
     if (first.resultStatus === "failed") {
       throw new Error(first.resultMessage ?? "Command failed");
     }
-    return { ok: true, action: "run", ...first };
+    return first;
   } catch {
     await runtime.api.restartSession(sessionId);
     const second = await attempt();
     if (second.resultStatus === "failed") {
       throw new Error(second.resultMessage ?? "Command failed after retry");
     }
-    return { ok: true, action: "run", ...second };
+    return second;
   }
+}
+
+export async function agentNavigate(runtime: Runtime, input: { url: string }) {
+  const result = await executeAgentCommand(runtime, {
+    type: "navigate",
+    payload: { url: input.url },
+  });
+  let cookieBanner:
+    | {
+        dismissed: boolean;
+        method?: "a11y" | "selector" | "text";
+        detail?: string;
+      }
+    | undefined;
+
+  if (result.resultStatus === "success") {
+    try {
+      const sessionId = requireSessionId(runtime);
+      const dismissed = await runtime.api.dismissCookieBanner(sessionId);
+      if (dismissed.dismissed) {
+        cookieBanner = dismissed;
+      }
+    } catch {
+      // Best-effort only.
+    }
+  }
+
+  return { ok: true, action: "navigate", ...result, cookieBanner };
+}
+
+export async function agentInteract(runtime: Runtime, input: InteractPayload) {
+  const result = await executeAgentCommand(runtime, {
+    type: "interact",
+    payload: input as unknown as Record<string, unknown>,
+  });
+  return { ok: true, action: input.action, ...result };
+}
+
+export async function agentRestart(runtime: Runtime) {
+  const result = await executeAgentCommand(runtime, {
+    type: "restart",
+    payload: {},
+  });
+  return { ok: true, action: "restart", ...result };
+}
+
+export async function agentTerminate(runtime: Runtime) {
+  const result = await executeAgentCommand(runtime, {
+    type: "terminate",
+    payload: {},
+  });
+  saveState(runtime, { sessionId: null });
+  return { ok: true, action: "terminate", ...result };
+}
+
+export async function agentDismissCookies(runtime: Runtime) {
+  const sessionId = requireSessionId(runtime);
+  await ensureReady(runtime, sessionId);
+  const result = await runtime.api.dismissCookieBanner(sessionId);
+  return { ok: true, action: "cookies", sessionId, ...result };
 }
 
 export async function agentContent(

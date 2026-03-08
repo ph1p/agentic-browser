@@ -9,7 +9,7 @@ Command executed
     ↓
 Evidence recorded (success/failure + selector + URL)
     ↓
-Grouped into TaskInsight (by taskIntent + siteDomain)
+Grouped into TaskInsight (anchored by taskIntent + siteDomain, then narrowed by path and selector evidence)
     ↓
 Scored by confidence, freshness, and relevance
     ↓
@@ -80,6 +80,8 @@ Results are ranked by:
 2. **Confidence** — success/failure ratio
 3. **Freshness** — more recent is better
 4. **Domain match** — exact domain gets a bonus
+
+When executions are recorded, matching is also narrowed by path pattern and selector evidence. That reduces cross-contamination between different flows on the same site, for example `/login/*` versus `/account/*`.
 
 ### Inspect an Insight
 

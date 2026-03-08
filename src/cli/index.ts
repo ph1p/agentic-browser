@@ -4,12 +4,16 @@ import { createCliRuntime } from "./runtime.js";
 import {
   agentCleanup,
   agentContent,
+  agentDismissCookies,
   agentElements,
+  agentInteract,
   agentMemorySearch,
-  agentRun,
+  agentNavigate,
+  agentRestart,
   agentStart,
   agentStatus,
   agentStop,
+  agentTerminate,
 } from "./commands/agent.js";
 import { runSessionStart } from "./commands/session-start.js";
 import { runSessionStatus } from "./commands/session-status.js";
@@ -28,6 +32,7 @@ async function main() {
   const runtime = createCliRuntime();
   const program = new Command();
   program.name("agentic-browser").description("Agentic browser CLI");
+  const collect = (value: string, previous: string[] = []) => [...previous, value];
 
   program
     .command("session:start")
@@ -231,16 +236,165 @@ async function main() {
   });
 
   agent
-    .command("run")
-    .argument("<type>", "navigate|interact|restart|terminate")
-    .argument("<payloadJson>", "JSON payload")
-    .action(async (type: string, payloadJson: string) => {
-      const result = await agentRun(runtime, {
-        type: type as "navigate" | "interact" | "restart" | "terminate",
-        payload: JSON.parse(payloadJson) as Record<string, unknown>,
+    .command("navigate")
+    .argument("<url>")
+    .action(async (url: string) => {
+      const result = await agentNavigate(runtime, { url });
+      console.log(JSON.stringify(result));
+    });
+
+  agent
+    .command("click")
+    .argument("<selector>")
+    .option("--fallback <selector>", "backup CSS selector", collect, [])
+    .action(async (selector: string, options: { fallback: string[] }) => {
+      const result = await agentInteract(runtime, {
+        action: "click",
+        selector,
+        fallbackSelectors: options.fallback,
       });
       console.log(JSON.stringify(result));
     });
+
+  agent
+    .command("type")
+    .argument("<selector>")
+    .argument("<text>")
+    .option("--fallback <selector>", "backup CSS selector", collect, [])
+    .action(async (selector: string, text: string, options: { fallback: string[] }) => {
+      const result = await agentInteract(runtime, {
+        action: "type",
+        selector,
+        text,
+        fallbackSelectors: options.fallback,
+      });
+      console.log(JSON.stringify(result));
+    });
+
+  agent
+    .command("press")
+    .argument("<key>")
+    .action(async (key: string) => {
+      const result = await agentInteract(runtime, {
+        action: "press",
+        key,
+      });
+      console.log(JSON.stringify(result));
+    });
+
+  agent
+    .command("wait")
+    .argument("<selector>")
+    .option("--timeout <ms>", "timeout in milliseconds", "2000")
+    .action(async (selector: string, options: { timeout: string }) => {
+      const result = await agentInteract(runtime, {
+        action: "waitFor",
+        selector,
+        timeoutMs: Number.parseInt(options.timeout, 10),
+      });
+      console.log(JSON.stringify(result));
+    });
+
+  agent
+    .command("hover")
+    .argument("<selector>")
+    .option("--fallback <selector>", "backup CSS selector", collect, [])
+    .action(async (selector: string, options: { fallback: string[] }) => {
+      const result = await agentInteract(runtime, {
+        action: "hover",
+        selector,
+        fallbackSelectors: options.fallback,
+      });
+      console.log(JSON.stringify(result));
+    });
+
+  agent
+    .command("select")
+    .argument("<selector>")
+    .argument("<value>")
+    .option("--fallback <selector>", "backup CSS selector", collect, [])
+    .action(async (selector: string, value: string, options: { fallback: string[] }) => {
+      const result = await agentInteract(runtime, {
+        action: "select",
+        selector,
+        value,
+        fallbackSelectors: options.fallback,
+      });
+      console.log(JSON.stringify(result));
+    });
+
+  agent
+    .command("toggle")
+    .argument("<selector>")
+    .option("--fallback <selector>", "backup CSS selector", collect, [])
+    .action(async (selector: string, options: { fallback: string[] }) => {
+      const result = await agentInteract(runtime, {
+        action: "toggle",
+        selector,
+        fallbackSelectors: options.fallback,
+      });
+      console.log(JSON.stringify(result));
+    });
+
+  agent
+    .command("scroll")
+    .option("--x <pixels>", "horizontal scroll delta", "0")
+    .option("--y <pixels>", "vertical scroll delta", "0")
+    .option("--selector <selector>", "scroll a specific element instead of the page")
+    .option("--fallback <selector>", "backup CSS selector", collect, [])
+    .action(async (options: { x: string; y: string; selector?: string; fallback: string[] }) => {
+      const result = await agentInteract(runtime, {
+        action: "scroll",
+        selector: options.selector,
+        fallbackSelectors: options.fallback,
+        scrollX: Number.parseInt(options.x, 10),
+        scrollY: Number.parseInt(options.y, 10),
+      });
+      console.log(JSON.stringify(result));
+    });
+
+  agent.command("back").action(async () => {
+    const result = await agentInteract(runtime, { action: "goBack" });
+    console.log(JSON.stringify(result));
+  });
+
+  agent.command("forward").action(async () => {
+    const result = await agentInteract(runtime, { action: "goForward" });
+    console.log(JSON.stringify(result));
+  });
+
+  agent.command("refresh").action(async () => {
+    const result = await agentInteract(runtime, { action: "refresh" });
+    console.log(JSON.stringify(result));
+  });
+
+  agent
+    .command("dialog")
+    .option("--dismiss", "dismiss the current dialog")
+    .option("--value <text>", "prompt response text")
+    .action(async (options: { dismiss?: boolean; value?: string }) => {
+      const result = await agentInteract(runtime, {
+        action: "dialog",
+        text: options.dismiss ? "dismiss" : undefined,
+        value: options.value,
+      });
+      console.log(JSON.stringify(result));
+    });
+
+  agent.command("cookies").action(async () => {
+    const result = await agentDismissCookies(runtime);
+    console.log(JSON.stringify(result));
+  });
+
+  agent.command("restart").action(async () => {
+    const result = await agentRestart(runtime);
+    console.log(JSON.stringify(result));
+  });
+
+  agent.command("terminate").action(async () => {
+    const result = await agentTerminate(runtime);
+    console.log(JSON.stringify(result));
+  });
 
   agent
     .command("content")

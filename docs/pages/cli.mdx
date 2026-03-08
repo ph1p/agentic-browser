@@ -4,16 +4,28 @@
 
 The `agent` subcommand manages session state automatically — it persists the active session, auto-restarts on disconnect, generates command IDs, and retries failed commands.
 
-| Command                        | Description                            |
-| ------------------------------ | -------------------------------------- |
-| `agent start [options]`        | Start or connect to a Chrome session   |
-| `agent status`                 | Show current session status            |
-| `agent run <type> <payload>`   | Execute a command (navigate, interact) |
-| `agent content [options]`      | Get page content                       |
-| `agent elements [options]`     | Discover interactive elements          |
-| `agent memory-search <intent>` | Search task memory                     |
-| `agent stop`                   | Stop the session                       |
-| `agent cleanup`                | Remove old session data                |
+| Command                           | Description                          |
+| --------------------------------- | ------------------------------------ | -------------------------------- | -------------------------- |
+| `agent start [options]`           | Start or connect to a Chrome session |
+| `agent status`                    | Show current session status          |
+| `agent navigate <url>`            | Navigate to a page                   |
+| `agent click <selector>`          | Click an element                     |
+| `agent type <selector> <text>`    | Type into an element                 |
+| `agent press <key>`               | Press a key on the active element    |
+| `agent wait <selector>`           | Wait for an element                  |
+| `agent hover <selector>`          | Hover an element                     |
+| `agent select <selector> <value>` | Select an option                     |
+| `agent toggle <selector>`         | Toggle a checkbox or radio           |
+| `agent scroll [options]`          | Scroll the page or an element        |
+| `agent back                       | forward                              | refresh`                         | Browser navigation actions |
+| `agent dialog [options]`          | Handle JavaScript dialogs            |
+| `agent cookies`                   | Dismiss cookie banners               |
+| `agent restart                    | terminate`                           | Recover or terminate the session |
+| `agent content [options]`         | Get page content                     |
+| `agent elements [options]`        | Discover interactive elements        |
+| `agent memory-search <intent>`    | Search task memory                   |
+| `agent stop`                      | Stop the session                     |
+| `agent cleanup`                   | Remove old session data              |
 
 #### `agent start` Options
 
@@ -27,36 +39,52 @@ The `agent` subcommand manages session state automatically — it persists the a
 ### Navigate
 
 ```bash
-agentic-browser agent run navigate '{"url":"https://example.com"}'
+agentic-browser agent navigate https://example.com
 ```
 
 ### Interact
 
 ```bash
 # Click
-agentic-browser agent run interact '{"action":"click","selector":"#login-btn"}'
+agentic-browser agent click "#login-btn"
 
 # Click with fallback selectors (tried if primary fails)
-agentic-browser agent run interact '{"action":"click","selector":"#login-btn","fallbackSelectors":["button[aria-label=\"Login\"]"]}'
+agentic-browser agent click "#login-btn" --fallback 'button[aria-label="Login"]'
 
 # Type into an input
-agentic-browser agent run interact '{"action":"type","selector":"input[name=q]","text":"search query"}'
+agentic-browser agent type 'input[name=q]' "search query"
 
 # Press a key
-agentic-browser agent run interact '{"action":"press","key":"Enter"}'
+agentic-browser agent press Enter
 
 # Wait for an element to appear
-agentic-browser agent run interact '{"action":"waitFor","selector":"#results","timeoutMs":5000}'
+agentic-browser agent wait "#results" --timeout 5000
+
+# Hover an element
+agentic-browser agent hover "#profile-menu"
+
+# Select an option
+agentic-browser agent select 'select[name=country]' DE
+
+# Toggle a checkbox
+agentic-browser agent toggle "#terms"
+
+# Scroll
+agentic-browser agent scroll --y 600
+agentic-browser agent scroll --selector "#results" --y 300
 
 # Browser navigation
-agentic-browser agent run interact '{"action":"goBack"}'
-agentic-browser agent run interact '{"action":"goForward"}'
-agentic-browser agent run interact '{"action":"refresh"}'
+agentic-browser agent back
+agentic-browser agent forward
+agentic-browser agent refresh
 
 # Handle JavaScript dialogs
-agentic-browser agent run interact '{"action":"dialog"}'                       # accept
-agentic-browser agent run interact '{"action":"dialog","text":"dismiss"}'      # dismiss
-agentic-browser agent run interact '{"action":"dialog","value":"my answer"}'   # respond to prompt
+agentic-browser agent dialog                      # accept
+agentic-browser agent dialog --dismiss            # dismiss
+agentic-browser agent dialog --value "my answer"  # respond to prompt
+
+# Dismiss cookie banners
+agentic-browser agent cookies
 ```
 
 ### Get Content
@@ -173,7 +201,7 @@ All commands print exactly **one JSON line** to `stdout`. Use exit code `0` for 
 ```json
 {
   "ok": true,
-  "action": "run",
+  "action": "navigate",
   "commandId": "cmd-1",
   "sessionId": "abc-123",
   "type": "navigate",
@@ -211,9 +239,9 @@ Runs the stdio-based MCP server. This is what AI tools invoke when you configure
 ## Recommended Workflow
 
 1. `agent start` — launch Chrome (or `--cdp-url <url>` to connect, `--headless` for CI, `--user-agent` to override UA)
-2. `agent run navigate` — go to target page
+2. `agent navigate` — go to target page
 3. `agent elements` — discover what's clickable
-4. `agent run interact` — use discovered selectors
+4. `agent click`, `agent type`, `agent select`, and related typed commands — use discovered selectors
 5. `agent content` — read page content to verify
 6. `agent memory-search` — on repeat visits, reuse known selectors
 7. `agent stop` — terminate when done

@@ -176,7 +176,7 @@ The typical workflow:
 agentic-browser agent elements --roles button,link
 
 # 2. Use a selector from the result (with fallbacks for resilience)
-agentic-browser agent run interact '{"action":"click","selector":"#login-btn","fallbackSelectors":["button[aria-label=\"Login\"]"]}'
+agentic-browser agent click "#login-btn" --fallback 'button[aria-label="Login"]'
 
 # 3. After navigation, discover again
 agentic-browser agent elements

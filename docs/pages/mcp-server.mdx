@@ -159,12 +159,12 @@ Navigation actions (`goBack`, `goForward`, `refresh`) and `dialog` don't require
 
 Get the current page content. MCP responses are compacted for LLMs so the model can understand page structure without parsing a large raw blob first.
 
-| Parameter   | Type                                          | Required | Default  | Description                                                                              |
-| ----------- | --------------------------------------------- | -------- | -------- | ---------------------------------------------------------------------------------------- |
-| `mode`      | `"title"` \| `"text"` \| `"html"` \| `"a11y"` | No       | `"text"` | Extraction mode                                                                          |
-| `selector`  | string                                        | No       |          | CSS selector to scope content                                                            |
+| Parameter   | Type                                          | Required | Default  | Description                                                                                        |
+| ----------- | --------------------------------------------- | -------- | -------- | -------------------------------------------------------------------------------------------------- |
+| `mode`      | `"title"` \| `"text"` \| `"html"` \| `"a11y"` | No       | `"text"` | Extraction mode                                                                                    |
+| `selector`  | string                                        | No       |          | CSS selector to scope content                                                                      |
 | `maxChars`  | number                                        | No       |          | Max characters to return (default: 8000 for text, 10000 for a11y, 4000 for html, no cap for title) |
-| `sessionId` | string                                        | No       |          | Uses active session if omitted                                                           |
+| `sessionId` | string                                        | No       |          | Uses active session if omitted                                                                     |
 
 Content is automatically truncated at the default `maxChars` limit. When truncated, the response includes a `truncated: true` flag and a notice. Use a CSS `selector` to scope content instead of raising the limit.
 

@@ -111,8 +111,8 @@ agentic-browser agent start --user-profile default
 agentic-browser agent start --headless
 agentic-browser agent start --user-agent "MyBot/1.0"
 agentic-browser agent status
-agentic-browser agent run navigate '{"url":"https://example.com"}'
-agentic-browser agent run interact '{"action":"click","selector":"#login"}'
+agentic-browser agent navigate https://example.com
+agentic-browser agent click "#login"
 agentic-browser agent content --mode text
 agentic-browser agent content --mode html --selector main
 agentic-browser agent elements
@@ -132,7 +132,7 @@ agentic-browser agent elements --roles button,link,input --visible-only --limit 
 agentic-browser agent elements --selector "#main-content"
 ```
 
-Returns a JSON array of elements with CSS selectors and fallback selectors usable in `agent run interact`:
+Returns a JSON array of elements with CSS selectors and fallback selectors usable in the typed agent commands like `agent click`, `agent type`, and `agent select`:
 
 ```json
 {
@@ -255,7 +255,7 @@ agentic-browser memory:stats
 
 1. `agent start` — launch Chrome and persist session.
 2. `agent elements` — discover what's on the page.
-3. `agent run navigate/interact` — execute actions using discovered selectors.
+3. `agent navigate`, `agent click`, `agent type`, `agent select`, and related typed commands — execute actions using discovered selectors.
 4. `agent content` — read page content after actions.
 5. `agent memory-search` — reuse known selectors for repeated tasks.
 6. `agent stop` — terminate when done.
@@ -265,7 +265,7 @@ agentic-browser memory:stats
 - Exactly **one** managed session is supported at a time.
 - Session state is persisted in `.agentic-browser/`.
 - All commands print exactly one JSON line to `stdout`.
-- `payloadJson` must be valid JSON.
+- The typed `agent` commands are the preferred interface for LLMs. Use low-level `command:run` only when you need raw JSON payload control.
 - Parse only `stdout` as result object and use exit code for success/failure.
 
 ## Programmatic API
