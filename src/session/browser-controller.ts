@@ -159,6 +159,9 @@ class CdpConnection implements CdpClient {
     params?: Record<string, unknown>,
     timeoutMs = 15000,
   ): Promise<T> {
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error(`WebSocket not open (state=${this.ws.readyState}), cannot send '${method}'`);
+    }
     const id = ++this.nextId;
     const payload = { id, method, params };
 
@@ -237,8 +240,8 @@ class CdpConnection implements CdpClient {
   }
 }
 
-async function getJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
+async function getJson<T>(url: string, timeoutMs = 5000): Promise<T> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${url}`);
   }
@@ -393,12 +396,25 @@ export class ChromeCdpBrowserController implements BrowserController {
     }
   >();
 
+  private readonly cleanupInterval: ReturnType<typeof setInterval>;
+
   constructor(
     private readonly baseDir: string,
     private readonly connectionFactory: (
       targetWsUrl: string,
     ) => Promise<CdpClient> = CdpConnection.connect,
-  ) {}
+  ) {
+    // Evict connections idle for >5 minutes
+    this.cleanupInterval = setInterval(() => {
+      const cutoff = Date.now() - 5 * 60 * 1000;
+      for (const [url, entry] of this.connections) {
+        if (entry.lastUsedAt < cutoff) {
+          this.dropConnection(url);
+        }
+      }
+    }, 60_000);
+    this.cleanupInterval.unref();
+  }
 
   private async getConnection(targetWsUrl: string): Promise<CdpClient> {
     const cached = this.connections.get(targetWsUrl);
@@ -605,7 +621,10 @@ export class ChromeCdpBrowserController implements BrowserController {
         conn.waitForEvent("Page.frameStoppedLoading", 6000),
       ]);
 
-      await conn.send("Page.navigate", { url });
+      const navResult = await conn.send<{ errorText?: string }>("Page.navigate", { url });
+      if (navResult.errorText) {
+        throw new Error(`Navigation failed: ${navResult.errorText}`);
+      }
 
       const navigatedEvent = await navigatedPromise;
       try {
@@ -1418,13 +1437,18 @@ export class ChromeCdpBrowserController implements BrowserController {
         /^accept\s*(all)?\s*(cookies)?$/i,
         /^(i\s+)?agree(\s+to\s+all)?$/i,
         /^allow\s*(all)?\s*(cookies)?$/i,
-        /^got\s*it$/i, /^ok$/i, /^consent$/i,
+        /^got\s*it$/i,
+        /^ok$/i,
+        /^consent$/i,
         /^(alle\s+)?akzeptieren$/i,
-        /^(alle\s+)?zustimmen$/i, /^einverstanden$/i,
-        /^(j')?accepte(r)?(\s+tout)?$/i, /^(tout\s+)?accepter$/i,
+        /^(alle\s+)?zustimmen$/i,
+        /^einverstanden$/i,
+        /^(j')?accepte(r)?(\s+tout)?$/i,
+        /^(tout\s+)?accepter$/i,
         /^aceptar(\s+todo)?$/i,
         /^accetta(\s+tutto)?$/i,
-        /^accepteren$/i, /^alle\s+accepteren$/i,
+        /^accepteren$/i,
+        /^alle\s+accepteren$/i,
         /^aceitar(\s+tudo)?$/i,
       ];
 
@@ -1459,10 +1483,9 @@ export class ChromeCdpBrowserController implements BrowserController {
       const target = candidates[0];
       try {
         // Resolve the DOM node to get a JS object reference
-        const { object } = await conn.send<{ object: { objectId?: string } }>(
-          "DOM.resolveNode",
-          { backendNodeId: target.backendDOMNodeId },
-        );
+        const { object } = await conn.send<{ object: { objectId?: string } }>("DOM.resolveNode", {
+          backendNodeId: target.backendDOMNodeId,
+        });
         if (object?.objectId) {
           // Call click() on the resolved object
           await conn.send("Runtime.callFunctionOn", {
@@ -1579,9 +1602,7 @@ export class MockBrowserController implements BrowserController {
     return { elements: [], totalFound: 0, truncated: false };
   }
 
-  async dismissCookieBanner(
-    _targetWsUrl: string,
-  ): Promise<DismissCookieBannerResult> {
+  async dismissCookieBanner(_targetWsUrl: string): Promise<DismissCookieBannerResult> {
     return { dismissed: false };
   }
 

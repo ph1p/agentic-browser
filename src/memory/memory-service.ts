@@ -42,6 +42,11 @@ export class MemoryService {
     this.index = new MemoryIndex();
   }
 
+  /** Force an immediate synchronous flush of pending writes. */
+  flushSync(): void {
+    this.store.flushSync();
+  }
+
   search(input: MemorySearchInput): MemorySearchResult[] {
     const cacheKey = `${input.taskIntent}\0${input.siteDomain ?? ""}\0${input.limit ?? 10}`;
     const now = Date.now();

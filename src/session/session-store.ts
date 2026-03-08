@@ -109,7 +109,14 @@ export class SessionStore {
   }
 
   private read(): StoreState {
-    return JSON.parse(fs.readFileSync(this.filePath, "utf8")) as StoreState;
+    try {
+      return JSON.parse(fs.readFileSync(this.filePath, "utf8")) as StoreState;
+    } catch {
+      // Corrupted or unreadable — reset to empty state
+      const empty: StoreState = { sessions: {} };
+      this.write(empty);
+      return empty;
+    }
   }
 
   private write(state: StoreState): void {

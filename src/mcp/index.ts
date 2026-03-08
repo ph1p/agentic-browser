@@ -373,6 +373,12 @@ export async function main() {
       }
       activeSessionId = undefined;
     }
+    // Flush pending memory writes before exit
+    try {
+      getCore().context.memoryService.flushSync();
+    } catch {
+      // best-effort
+    }
     // Clean up terminated sessions from the store
     try {
       getCore().sessions.cleanupSessions({ maxAgeDays: 0 });

@@ -108,10 +108,6 @@ export class TaskInsightStore {
         this.flushTimer = null;
         this.flushSync();
       }, FLUSH_DELAY_MS);
-      // Allow the Node process to exit even if the timer is pending
-      if (this.flushTimer && typeof this.flushTimer === "object" && "unref" in this.flushTimer) {
-        this.flushTimer.unref();
-      }
     }
   }
 
