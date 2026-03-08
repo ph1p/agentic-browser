@@ -113,7 +113,7 @@ export class MemoryService {
 
   recordSuccess(input: RecordExecutionInput): TaskInsight {
     const insights = this.store.list();
-    const matched = this.findBestExactMatch(insights, input.taskIntent, input.siteDomain);
+    const matched = this.findBestExactMatch(insights, input);
     const evidence = this.createEvidence(input, "success");
 
     if (!matched) {
@@ -175,7 +175,7 @@ export class MemoryService {
 
   recordFailure(input: RecordExecutionInput, errorMessage: string): TaskInsight | undefined {
     const insights = this.store.list();
-    const matched = this.findBestExactMatch(insights, input.taskIntent, input.siteDomain);
+    const matched = this.findBestExactMatch(insights, input);
     if (!matched) {
       return undefined;
     }
@@ -199,23 +199,73 @@ export class MemoryService {
 
   private findBestExactMatch(
     insights: TaskInsight[],
-    taskIntent: string,
-    siteDomain: string,
+    input: Pick<RecordExecutionInput, "taskIntent" | "siteDomain" | "sitePathPattern" | "selector">,
   ): TaskInsight | undefined {
-    const intentLower = taskIntent.toLowerCase();
-    const domainLower = siteDomain.toLowerCase();
+    const intentLower = input.taskIntent.toLowerCase();
+    const domainLower = input.siteDomain.toLowerCase();
     let best: TaskInsight | undefined;
     for (const insight of insights) {
       if (
         insight.taskIntent.toLowerCase() === intentLower &&
         insight.siteDomain.toLowerCase() === domainLower
       ) {
-        if (!best || insight.updatedAt > best.updatedAt) {
+        if (
+          !best ||
+          this.scoreExactMatch(insight, input) > this.scoreExactMatch(best, input) ||
+          (this.scoreExactMatch(insight, input) === this.scoreExactMatch(best, input) &&
+            insight.updatedAt > best.updatedAt)
+        ) {
           best = insight;
         }
       }
     }
     return best;
+  }
+
+  private scoreExactMatch(
+    insight: TaskInsight,
+    input: Pick<RecordExecutionInput, "sitePathPattern" | "selector">,
+  ): number {
+    let score = 0;
+
+    if (insight.sitePathPattern === input.sitePathPattern) {
+      score += 4;
+    } else if (
+      insight.sitePathPattern === "/" ||
+      input.sitePathPattern === "/" ||
+      this.sameFirstPathSegment(insight.sitePathPattern, input.sitePathPattern)
+    ) {
+      score += 2;
+    }
+
+    if (input.selector) {
+      if (insight.actionRecipe.some((step) => step.selector === input.selector)) {
+        score += 3;
+      }
+      if (
+        insight.evidence.some((ev) => ev.selector === input.selector && ev.result === "success")
+      ) {
+        score += 2;
+      }
+      if ((insight.selectorAliases ?? []).some((alias) => alias.selector === input.selector)) {
+        score += 1;
+      }
+    }
+
+    score += Math.min(insight.successCount, 5) * 0.1;
+    score -= Math.min(insight.failureCount, 5) * 0.1;
+    return score;
+  }
+
+  private sameFirstPathSegment(left: string, right: string): boolean {
+    const normalize = (value: string): string => {
+      const [firstSegment = ""] = value.replace(/\/\*$/, "").split("/").filter(Boolean);
+      return firstSegment.toLowerCase();
+    };
+
+    const leftSegment = normalize(left);
+    const rightSegment = normalize(right);
+    return Boolean(leftSegment) && leftSegment === rightSegment;
   }
 
   private createEvidence(

@@ -10,6 +10,13 @@ import {
 
 const EMPTY_STATE: MemoryState = { insights: [] };
 const FLUSH_DELAY_MS = 500;
+const REGISTERED_EXIT_HANDLERS = Symbol.for("agentic-browser.task-insight-store.exit-handlers");
+const REGISTERED_STORES = Symbol.for("agentic-browser.task-insight-store.instances");
+
+interface ProcessWithTaskInsightRegistry extends NodeJS.Process {
+  [REGISTERED_EXIT_HANDLERS]?: boolean;
+  [REGISTERED_STORES]?: Set<TaskInsightStore>;
+}
 
 export class TaskInsightStore {
   private readonly filePath: string;
@@ -36,17 +43,7 @@ export class TaskInsightStore {
       this.writeDisk(EMPTY_STATE);
     }
 
-    // Flush pending writes on exit
-    const onExit = () => this.flushSync();
-    process.on("exit", onExit);
-    process.on("SIGINT", () => {
-      this.flushSync();
-      process.exit(0);
-    });
-    process.on("SIGTERM", () => {
-      this.flushSync();
-      process.exit(0);
-    });
+    this.registerProcessHandlers();
   }
 
   list(): TaskInsight[] {
@@ -152,5 +149,33 @@ export class TaskInsightStore {
     const tempPath = `${this.filePath}.tmp`;
     fs.writeFileSync(tempPath, JSON.stringify(state, null, 2), "utf8");
     fs.renameSync(tempPath, this.filePath);
+  }
+
+  private registerProcessHandlers(): void {
+    const proc = process as ProcessWithTaskInsightRegistry;
+    const stores = (proc[REGISTERED_STORES] ??= new Set<TaskInsightStore>());
+    stores.add(this);
+
+    if (proc[REGISTERED_EXIT_HANDLERS]) {
+      return;
+    }
+
+    proc[REGISTERED_EXIT_HANDLERS] = true;
+
+    const flushAll = () => {
+      for (const store of stores) {
+        store.flushSync();
+      }
+    };
+
+    process.on("exit", flushAll);
+    process.on("SIGINT", () => {
+      flushAll();
+      process.exit(0);
+    });
+    process.on("SIGTERM", () => {
+      flushAll();
+      process.exit(0);
+    });
   }
 }

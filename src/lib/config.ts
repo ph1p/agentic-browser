@@ -42,7 +42,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     wsPort,
     commandTimeoutMs,
     logDir: env.AGENTIC_BROWSER_LOG_DIR ?? path.resolve(process.cwd(), ".agentic-browser"),
-    browserExecutablePath: env.AGENTIC_BROWSER_CHROME_PATH,
+    browserExecutablePath:
+      env.AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH ?? env.AGENTIC_BROWSER_CHROME_PATH,
     cdpUrl: env.AGENTIC_BROWSER_CDP_URL,
     userProfileDir,
     headless: env.AGENTIC_BROWSER_HEADLESS === "true" || env.AGENTIC_BROWSER_HEADLESS === "1",

@@ -2,6 +2,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { createAgenticBrowserCore, type AgenticBrowserCore } from "../cli/runtime.js";
+import {
+  compactInteractiveElementsResult,
+  compactMemoryResults,
+  compactPageContent,
+} from "./response-helpers.js";
 
 let core: AgenticBrowserCore;
 let activeSessionId: string | undefined;
@@ -64,8 +69,23 @@ server.tool(
       type: "navigate",
       payload: { url },
     });
+    let cookieBanner: { dismissed: boolean; method?: string; detail?: string } | undefined;
+    if (result.resultStatus === "success") {
+      try {
+        const dismissed = await getCore().dismissCookieBanner(sid);
+        if (dismissed.dismissed) {
+          cookieBanner = dismissed;
+        }
+      } catch {
+        // Best-effort only.
+      }
+    }
     // Return only the fields the LLM needs
-    const compact = { resultStatus: result.resultStatus, resultMessage: result.resultMessage };
+    const compact = {
+      resultStatus: result.resultStatus,
+      resultMessage: result.resultMessage,
+      cookieBanner,
+    };
     return { content: [{ type: "text" as const, text: JSON.stringify(compact) }] };
   },
 );
@@ -180,33 +200,10 @@ server.tool(
   async ({ mode, selector, maxChars, sessionId }) => {
     const sid = await resolveSession(sessionId);
     const result = await getCore().getPageContent({ sessionId: sid, mode, selector });
-
-    // Apply truncation defaults per mode (title is never truncated)
-    const defaultMaxChars: Record<string, number | undefined> = {
-      text: 12000,
-      a11y: 12000,
-      html: 6000,
-      title: undefined,
-    };
-    const limit = maxChars ?? defaultMaxChars[mode];
-
-    if (limit && typeof result.content === "string" && result.content.length > limit) {
-      const originalLength = result.content.length;
-      const truncatedContent =
-        result.content.slice(0, limit) +
-        `\n\n[Truncated — showing first ${limit} of ${originalLength} characters. Use a CSS selector to scope the content.]`;
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({ ...result, content: truncatedContent, truncated: true }),
-          },
-        ],
-      };
-    }
-
     return {
-      content: [{ type: "text" as const, text: JSON.stringify({ ...result, truncated: false }) }],
+      content: [
+        { type: "text" as const, text: JSON.stringify(compactPageContent(result, maxChars)) },
+      ],
     };
   },
 );
@@ -248,30 +245,11 @@ server.tool(
       limit,
       selector,
     });
-
-    // Strip redundant fields to reduce token usage
-    const compactElements = result.elements.map((el) => {
-      const compact: Record<string, unknown> = { ...el };
-      // visible is always true when visibleOnly is true (the default)
-      if (visibleOnly) delete compact.visible;
-      // actions are derivable from role+inputType — documented in tool description
-      delete compact.actions;
-      // tagName is redundant with role
-      delete compact.tagName;
-      // ariaLabel duplicates text when they match
-      if (compact.ariaLabel && compact.ariaLabel === compact.text) delete compact.ariaLabel;
-      return compact;
-    });
-
     return {
       content: [
         {
           type: "text" as const,
-          text: JSON.stringify({
-            elements: compactElements,
-            totalFound: result.totalFound,
-            truncated: result.truncated,
-          }),
+          text: JSON.stringify(compactInteractiveElementsResult(result, visibleOnly)),
         },
       ],
     };
@@ -290,34 +268,10 @@ server.tool(
   },
   async ({ taskIntent, siteDomain, limit }) => {
     const result = getCore().searchMemory({ taskIntent, siteDomain, limit });
-
-    // Post-process to reduce token usage
-    const compactResults = result.results.map((r) => {
-      const compact: Record<string, unknown> = { ...r };
-      // score is redundant — results are already sorted by relevance
-      delete compact.score;
-      // lastVerifiedAt is noise for the LLM
-      delete compact.lastVerifiedAt;
-      // Strip empty fallbackSelectors from aliases
-      if (Array.isArray(compact.selectorAliases)) {
-        compact.selectorAliases = (compact.selectorAliases as Record<string, unknown>[]).map(
-          (alias) => {
-            const compactAlias = { ...alias };
-            if (
-              Array.isArray(compactAlias.fallbackSelectors) &&
-              compactAlias.fallbackSelectors.length === 0
-            ) {
-              delete compactAlias.fallbackSelectors;
-            }
-            return compactAlias;
-          },
-        );
-      }
-      return compact;
-    });
-
     return {
-      content: [{ type: "text" as const, text: JSON.stringify({ results: compactResults }) }],
+      content: [
+        { type: "text" as const, text: JSON.stringify(compactMemoryResults(result.results)) },
+      ],
     };
   },
 );

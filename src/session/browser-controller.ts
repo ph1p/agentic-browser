@@ -1321,17 +1321,26 @@ export class ChromeCdpBrowserController implements BrowserController {
    * Returns silently on failure — never blocks navigation.
    */
   async dismissCookieBanner(targetWsUrl: string): Promise<DismissCookieBannerResult> {
-    // Strategy 1: Use the accessibility tree to find consent buttons.
-    // This is more robust than DOM selectors because it works regardless of
-    // the CSS framework, shadow DOM, or obfuscated class names.
+    // Strategy 1: Cheap DOM scan first for fast-path common consent banners.
+    try {
+      const domResult = await this.dismissViaDom(targetWsUrl);
+      if (domResult.dismissed) return domResult;
+    } catch {
+      // DOM approach failed — fall through to a11y-based fallback
+    }
+
+    // Strategy 2: Use the accessibility tree when DOM heuristics miss.
     try {
       const a11yResult = await this.dismissViaA11y(targetWsUrl);
       if (a11yResult.dismissed) return a11yResult;
     } catch {
-      // a11y approach failed — fall through to DOM-based fallbacks
+      // a11y approach failed — return false below
     }
 
-    // Strategy 2+3: DOM-based selector scan + text-based button scan
+    return { dismissed: false };
+  }
+
+  private async dismissViaDom(targetWsUrl: string): Promise<DismissCookieBannerResult> {
     const expression = `(() => {
       // Common cookie-consent button selectors (ordered by specificity)
       const selectors = [
@@ -1393,23 +1402,19 @@ export class ChromeCdpBrowserController implements BrowserController {
       return JSON.stringify({ dismissed: false });
     })()`;
 
-    try {
-      return await this.withRetry(targetWsUrl, async (conn) => {
-        await this.ensureEnabled(targetWsUrl);
-        const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
-          expression,
-          returnByValue: true,
-        });
-        const raw = result.result.value ?? '{"dismissed":false}';
-        try {
-          return JSON.parse(raw) as DismissCookieBannerResult;
-        } catch {
-          return { dismissed: false };
-        }
+    return await this.withRetry(targetWsUrl, async (conn) => {
+      await this.ensureEnabled(targetWsUrl);
+      const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
+        expression,
+        returnByValue: true,
       });
-    } catch {
-      return { dismissed: false };
-    }
+      const raw = result.result.value ?? '{"dismissed":false}';
+      try {
+        return JSON.parse(raw) as DismissCookieBannerResult;
+      } catch {
+        return { dismissed: false };
+      }
+    });
   }
 
   /**

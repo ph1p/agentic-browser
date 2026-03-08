@@ -18,6 +18,7 @@ interface StoreState {
 
 export class SessionStore {
   private readonly filePath: string;
+  private cache: StoreState | null = null;
 
   constructor(baseDir: string) {
     fs.mkdirSync(baseDir, { recursive: true });
@@ -109,8 +110,13 @@ export class SessionStore {
   }
 
   private read(): StoreState {
+    if (this.cache) {
+      return this.cache;
+    }
     try {
-      return JSON.parse(fs.readFileSync(this.filePath, "utf8")) as StoreState;
+      const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as StoreState;
+      this.cache = parsed;
+      return parsed;
     } catch {
       // Corrupted or unreadable — reset to empty state
       const empty: StoreState = { sessions: {} };
@@ -120,6 +126,7 @@ export class SessionStore {
   }
 
   private write(state: StoreState): void {
+    this.cache = state;
     fs.writeFileSync(this.filePath, JSON.stringify(state, null, 2), "utf8");
   }
 }
