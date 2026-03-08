@@ -107,7 +107,7 @@ The server communicates over stdin/stdout using the MCP JSON-RPC protocol.
 
 ### `browser_start_session`
 
-Start a Chrome browser session. Call this first before any other browser tool.
+Start a Chrome browser session. Most workflows do not need to call this explicitly because browser tools auto-start a session when needed.
 
 **Parameters:** None
 
@@ -117,12 +117,14 @@ Start a Chrome browser session. Call this first before any other browser tool.
 
 ### `browser_navigate`
 
-Navigate the browser to a URL.
+Navigate the browser to a URL. After successful navigation, the server also attempts a best-effort cookie-banner dismissal and includes the result when something was dismissed.
 
 | Parameter   | Type   | Required | Description                    |
 | ----------- | ------ | -------- | ------------------------------ |
 | `url`       | string | Yes      | The URL to navigate to         |
 | `sessionId` | string | No       | Uses active session if omitted |
+
+**Returns:** `resultStatus`, `resultMessage`, and optional `cookieBanner`.
 
 ---
 
@@ -155,16 +157,23 @@ Navigation actions (`goBack`, `goForward`, `refresh`) and `dialog` don't require
 
 ### `browser_get_content`
 
-Get the current page content.
+Get the current page content. MCP responses are compacted for LLMs so the model can understand page structure without parsing a large raw blob first.
 
 | Parameter   | Type                                          | Required | Default  | Description                                                                              |
 | ----------- | --------------------------------------------- | -------- | -------- | ---------------------------------------------------------------------------------------- |
 | `mode`      | `"title"` \| `"text"` \| `"html"` \| `"a11y"` | No       | `"text"` | Extraction mode                                                                          |
 | `selector`  | string                                        | No       |          | CSS selector to scope content                                                            |
-| `maxChars`  | number                                        | No       |          | Max characters to return (default: 12000 for text/a11y, 6000 for html, no cap for title) |
+| `maxChars`  | number                                        | No       |          | Max characters to return (default: 8000 for text, 10000 for a11y, 4000 for html, no cap for title) |
 | `sessionId` | string                                        | No       |          | Uses active session if omitted                                                           |
 
 Content is automatically truncated at the default `maxChars` limit. When truncated, the response includes a `truncated: true` flag and a notice. Use a CSS `selector` to scope content instead of raising the limit.
+
+**Response shape by mode:**
+
+- `title`: `{ mode, content, truncated }`
+- `text`: `{ mode, content, truncated, summaryLines, previewLines }`
+- `a11y`: `{ mode, content, truncated, headings, landmarks, actions, inputs, previewLines }`
+- `html`: `{ mode, content, truncated }`
 
 ---
 
@@ -189,18 +198,29 @@ Discover interactive elements on the page. Returns CSS selectors and fallback se
       "selector": "#login-btn",
       "fallbackSelectors": ["button[aria-label=\"Login\"]", "[data-testid=\"login\"]"],
       "role": "button",
-      "text": "Login",
-      "enabled": true
+      "text": "Login"
     }
   ],
   "totalFound": 42,
-  "truncated": true
+  "truncated": true,
+  "summary": {
+    "countsByRole": {
+      "button": 12,
+      "link": 18
+    },
+    "primaryActions": [
+      {
+        "role": "button",
+        "text": "Login",
+        "selector": "#login-btn",
+        "fallbackSelectors": ["button[aria-label=\"Login\"]", "[data-testid=\"login\"]"]
+      }
+    ]
+  }
 }
 ```
 
-MCP responses omit `visible` (always true when `visibleOnly` is true), `actions` (derivable from `role`), and `tagName` (redundant with `role`). These fields are still available via the programmatic API.
-
-```
+MCP responses omit `visible` (always true when `visibleOnly` is true), `actions` (derivable from `role`), `tagName` (redundant with `role`), and `enabled` when it is `true`. These fields are still available via the programmatic API.
 
 ---
 
@@ -215,6 +235,14 @@ Search task memory for previously learned selectors, selector aliases, and inter
 | `limit`      | number | No       | `5`     | Max results                                    |
 
 ---
+
+### `browser_dismiss_cookies`
+
+Dismiss a cookie or consent banner on the current page. The tool tries fast DOM heuristics first, then falls back to the accessibility tree for banners that are harder to target.
+
+| Parameter   | Type   | Required | Description                    |
+| ----------- | ------ | -------- | ------------------------------ |
+| `sessionId` | string | No       | Uses active session if omitted |
 
 ### `browser_stop_session`
 
@@ -234,13 +262,12 @@ When the MCP client disconnects, the server automatically cleans up any active s
 
 A typical sequence an AI assistant would use:
 
-1. `browser_start_session` — launch Chrome
-2. `browser_navigate` with `url: "https://github.com/login"`
-3. `browser_get_elements` — see what's on the page (returns selectors + fallback selectors)
-4. `browser_interact` with `action: "type"`, `selector: "input[name=login]"`, `fallbackSelectors: [...]`, `text: "username"`
-5. `browser_interact` with `action: "type"`, `selector: "input[name=password]"`, `text: "***"`
-6. `browser_interact` with `action: "click"`, `selector: "input[type=submit]"`
-7. `browser_get_content` with `mode: "text"` — verify login worked
-8. `browser_interact` with `action: "goBack"` — navigate back if needed
+1. `browser_start_session` — optional, launch Chrome explicitly
+2. `browser_navigate` with `url: "https://github.com/login"` — cookie dismissal runs automatically after successful navigation
+3. `browser_get_content` with `mode: "a11y"` — get fast structure: headings, landmarks, actions, inputs
+4. `browser_get_elements` — get selectors, fallback selectors, and summarized primary actions
+5. `browser_interact` with `action: "type"`, `selector: "input[name=login]"`, `fallbackSelectors: [...]`, `text: "username"`
+6. `browser_interact` with `action: "type"`, `selector: "input[name=password]"`, `text: "***"`
+7. `browser_interact` with `action: "click"`, `selector: "input[type=submit]"`
+8. `browser_get_content` with `mode: "text"` — verify the next page using `summaryLines` and `previewLines`
 9. `browser_stop_session` — done
-```

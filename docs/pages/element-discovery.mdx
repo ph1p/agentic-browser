@@ -24,7 +24,7 @@ agentic-browser agent elements --selector "#main-content" --visible-only
 
 ### MCP
 
-Call `browser_get_elements` with optional filters. MCP responses are compact — `visible`, `actions`, and `tagName` are omitted to reduce token usage. Actions are derivable from `role` (see Roles and Actions table below).
+Call `browser_get_elements` with optional filters. MCP responses are compact — `visible`, `actions`, and `tagName` are omitted to reduce token usage, and `enabled` is omitted when it is `true`. The response also includes a `summary` block with `countsByRole` and `primaryActions` so an LLM can find the most useful controls quickly. Actions are derivable from `role` (see Roles and Actions table below).
 
 ### Programmatic
 

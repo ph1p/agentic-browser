@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - **Node.js 20+**
-- **Chrome** installed (auto-discovered, or set `AGENTIC_BROWSER_CHROME_PATH`)
+- **Chrome** installed (auto-discovered, or set `AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH`)
 
 ## Install
 
@@ -100,8 +100,8 @@ Add to `.cursor/mcp.json`:
 }
 ```
 
-Once configured, you'll see 7 browser tools available in your assistant:
-`browser_start_session`, `browser_navigate`, `browser_interact`, `browser_get_content`, `browser_get_elements`, `browser_search_memory`, `browser_stop_session`.
+Once configured, you'll see 8 browser tools available in your assistant:
+`browser_start_session`, `browser_navigate`, `browser_interact`, `browser_get_content`, `browser_get_elements`, `browser_search_memory`, `browser_dismiss_cookies`, `browser_stop_session`.
 
 ## Quick Start: Programmatic API
 
@@ -137,7 +137,8 @@ await core.stopSession(session.sessionId);
 | Variable                             | Default            | Description                                                         |
 | ------------------------------------ | ------------------ | ------------------------------------------------------------------- |
 | `AGENTIC_BROWSER_LOG_DIR`            | `.agentic-browser` | Base directory for sessions, memory, events                         |
-| `AGENTIC_BROWSER_CHROME_PATH`        | _(auto-discover)_  | Explicit path to Chrome executable                                  |
+| `AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH` | _(auto-discover)_  | Explicit path to Chrome executable                              |
+| `AGENTIC_BROWSER_CHROME_PATH`            | _(legacy alias)_   | Backward-compatible alias for Chrome executable path            |
 | `AGENTIC_BROWSER_CDP_URL`            |                    | Connect to an already-running Chrome (e.g. `http://127.0.0.1:9222`) |
 | `AGENTIC_BROWSER_USER_PROFILE`       |                    | Use real Chrome profile (`default`, `true`, or an absolute path)    |
 | `AGENTIC_BROWSER_HEADLESS`           |                    | Run Chrome in headless mode (`true` or `1`)                         |
