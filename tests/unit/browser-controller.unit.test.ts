@@ -244,6 +244,128 @@ describe("ChromeCdpBrowserController connection reuse", () => {
       "hello@example.com",
     );
   });
+
+  it("uses CDP key events for press interactions", async () => {
+    const conn = new FakeConnection();
+    const controller = new ChromeCdpBrowserController("/tmp", async () => conn);
+
+    const result = await controller.interact("ws://test", {
+      action: "press",
+      key: "Enter",
+      selector: "#search",
+    });
+
+    expect(result).toBe("pressed");
+    expect(
+      conn.sent
+        .filter((entry) => entry.method === "Input.dispatchKeyEvent")
+        .map((entry) => ({
+          type: entry.params?.type,
+          key: entry.params?.key,
+          code: entry.params?.code,
+        })),
+    ).toEqual([
+      { type: "keyDown", key: "Enter", code: "Enter" },
+      { type: "keyUp", key: "Enter", code: "Enter" },
+    ]);
+  });
+
+  it("returns structured summary content with frame awareness", async () => {
+    const conn = new FakeConnection({
+      sendHandler(method, params) {
+        if (method !== "Runtime.evaluate") {
+          return {};
+        }
+        const expression = String(params?.expression ?? "");
+        if (expression.includes("crossOriginFrameCount")) {
+          return {
+            result: {
+              value: {
+                url: "https://example.com",
+                title: "Example",
+                headings: ["Example"],
+                landmarks: ['main "Main content"'],
+                alerts: [],
+                frames: [
+                  {
+                    selector: 'iframe[title="Checkout"]',
+                    title: "Checkout",
+                    src: "https://pay.example/checkout",
+                    sameOrigin: false,
+                  },
+                ],
+                crossOriginFrameCount: 1,
+                hasMoreFrames: false,
+              },
+            },
+          };
+        }
+        return {
+          result: {
+            value: {
+              elements: [
+                {
+                  selector: "#buy",
+                  role: "button",
+                  tagName: "button",
+                  text: "Buy now",
+                  actions: ["click"],
+                  visible: true,
+                  enabled: true,
+                },
+                {
+                  selector: "#email",
+                  role: "input",
+                  tagName: "input",
+                  text: "Email",
+                  actions: ["click", "type", "press"],
+                  visible: true,
+                  enabled: true,
+                  inputType: "email",
+                },
+              ],
+              totalFound: 2,
+              truncated: false,
+            },
+          },
+        };
+      },
+    });
+    const controller = new ChromeCdpBrowserController("/tmp", async () => conn);
+
+    const result = await controller.getContent("ws://test", { mode: "summary" });
+
+    expect(result.mode).toBe("summary");
+    expect(result.content).toBe("");
+    expect(result.structuredContent).toMatchObject({
+      title: "Example",
+      crossOriginFrameCount: 1,
+      primaryActions: [{ selector: "#buy", text: "Buy now" }],
+      inputs: [{ selector: "#email", inputType: "email" }],
+    });
+  });
+
+  it("preserves browser-side truncation metadata for content reads", async () => {
+    const conn = new FakeConnection({
+      sendHandler(method) {
+        if (method === "Runtime.evaluate") {
+          return {
+            result: {
+              value: { content: "abcdef", truncated: true, originalLength: 12 },
+            },
+          };
+        }
+        return {};
+      },
+    });
+    const controller = new ChromeCdpBrowserController("/tmp", async () => conn);
+
+    const result = await controller.getContent("ws://test", { mode: "text", maxChars: 6 });
+
+    expect(result.truncated).toBe(true);
+    expect(result.originalLength).toBe(12);
+    expect(result.content).toContain("[Truncated - showing first 6 of 12 characters.");
+  });
 });
 
 describe("ChromeCdpBrowserController.getInteractiveElements", () => {

@@ -212,6 +212,31 @@ describe("mcp server tool handlers", () => {
       expect(defaultMaxChars["title"]).toBeUndefined();
     });
 
+    it("browser_get_content supports structured summary mode", async () => {
+      const core = createCore();
+      const session = await core.startSession();
+
+      await core.runCommand({
+        sessionId: session.sessionId,
+        commandId: `nav-${Date.now()}`,
+        type: "navigate",
+        payload: { url: "https://example.com" },
+      });
+
+      const result = await core.getPageContent({
+        sessionId: session.sessionId,
+        mode: "summary",
+      });
+
+      expect(result.mode).toBe("summary");
+      expect(result.structuredContent).toMatchObject({
+        mode: "summary",
+        title: "https://example.com",
+      });
+
+      await core.stopSession(session.sessionId);
+    });
+
     it("browser_get_elements strips visible, actions, tagName when visibleOnly=true", async () => {
       const core = createCore();
       const session = await core.startSession();

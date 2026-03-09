@@ -137,17 +137,23 @@ async function main() {
   program
     .command("page:content")
     .argument("<sessionId>")
-    .option("--mode <mode>", "title|text|html|a11y", "text")
+    .option("--mode <mode>", "title|text|html|a11y|summary", "summary")
     .option("--selector <selector>", "optional CSS selector")
+    .option("--max-chars <n>", "max characters for text/html/a11y modes")
     .action(
       async (
         sessionId: string,
-        options: { mode: "title" | "text" | "html" | "a11y"; selector?: string },
+        options: {
+          mode: "title" | "text" | "html" | "a11y" | "summary";
+          selector?: string;
+          maxChars?: string;
+        },
       ) => {
         const result = await runPageContent(runtime, {
           sessionId,
           mode: options.mode,
           selector: options.selector,
+          maxChars: options.maxChars ? Number.parseInt(options.maxChars, 10) : undefined,
         });
         console.log(JSON.stringify(result));
       },
@@ -398,12 +404,23 @@ async function main() {
 
   agent
     .command("content")
-    .option("--mode <mode>", "title|text|html|a11y", "text")
+    .option("--mode <mode>", "title|text|html|a11y|summary", "summary")
     .option("--selector <selector>", "optional CSS selector")
-    .action(async (options: { mode: "title" | "text" | "html" | "a11y"; selector?: string }) => {
-      const result = await agentContent(runtime, options);
-      console.log(JSON.stringify(result));
-    });
+    .option("--max-chars <n>", "max characters for text/html/a11y modes")
+    .action(
+      async (options: {
+        mode: "title" | "text" | "html" | "a11y" | "summary";
+        selector?: string;
+        maxChars?: string;
+      }) => {
+        const result = await agentContent(runtime, {
+          mode: options.mode,
+          selector: options.selector,
+          maxChars: options.maxChars ? Number.parseInt(options.maxChars, 10) : undefined,
+        });
+        console.log(JSON.stringify(result));
+      },
+    );
 
   agent
     .command("elements")

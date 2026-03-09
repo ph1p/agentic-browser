@@ -7,7 +7,6 @@ import path from "node:path";
 import WebSocket from "ws";
 
 import { discoverChrome } from "./chrome-launcher.js";
-import { loadControlExtension } from "./extension-loader.js";
 
 export type InteractAction =
   | "click"
@@ -36,16 +35,20 @@ export interface InteractPayload {
   timeoutMs?: number;
 }
 
-export type PageContentMode = "title" | "text" | "html" | "a11y";
+export type PageContentMode = "title" | "text" | "html" | "a11y" | "summary";
 
 export interface PageContentOptions {
   mode: PageContentMode;
   selector?: string;
+  maxChars?: number;
 }
 
 export interface PageContentResult {
   mode: PageContentMode;
   content: string;
+  truncated?: boolean;
+  originalLength?: number;
+  structuredContent?: Record<string, unknown>;
 }
 
 export type InteractiveElementRole =
@@ -504,6 +507,9 @@ interface DialogInfo {
   defaultPrompt?: string;
 }
 
+const CONTENT_TRUNCATION_HINT =
+  'Use a CSS selector to scope the content, or use mode="summary" for a lower-token overview.';
+
 const LOCATOR_RUNTIME_HELPERS = String.raw`
       const LOCATOR_SEPARATOR = ' >>> ';
 
@@ -718,6 +724,190 @@ ${body}
     })()`;
 }
 
+interface RuntimeContentPayload {
+  content?: string;
+  truncated?: boolean;
+  originalLength?: number;
+}
+
+interface KeyDispatchPayload {
+  key: string;
+  code: string;
+  windowsVirtualKeyCode: number;
+  nativeVirtualKeyCode: number;
+  text?: string;
+  unmodifiedText?: string;
+}
+
+const SPECIAL_KEY_PAYLOADS = new Map<string, KeyDispatchPayload>([
+  [
+    "Enter",
+    {
+      key: "Enter",
+      code: "Enter",
+      windowsVirtualKeyCode: 13,
+      nativeVirtualKeyCode: 13,
+      text: "\r",
+      unmodifiedText: "\r",
+    },
+  ],
+  ["Tab", { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 }],
+  [
+    "Escape",
+    { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 },
+  ],
+  [
+    "Backspace",
+    { key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 },
+  ],
+  [
+    "Delete",
+    { key: "Delete", code: "Delete", windowsVirtualKeyCode: 46, nativeVirtualKeyCode: 46 },
+  ],
+  [
+    "Space",
+    {
+      key: " ",
+      code: "Space",
+      windowsVirtualKeyCode: 32,
+      nativeVirtualKeyCode: 32,
+      text: " ",
+      unmodifiedText: " ",
+    },
+  ],
+  [
+    " ",
+    {
+      key: " ",
+      code: "Space",
+      windowsVirtualKeyCode: 32,
+      nativeVirtualKeyCode: 32,
+      text: " ",
+      unmodifiedText: " ",
+    },
+  ],
+  [
+    "ArrowUp",
+    { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38, nativeVirtualKeyCode: 38 },
+  ],
+  [
+    "ArrowDown",
+    { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40, nativeVirtualKeyCode: 40 },
+  ],
+  [
+    "ArrowLeft",
+    { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37, nativeVirtualKeyCode: 37 },
+  ],
+  [
+    "ArrowRight",
+    { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 },
+  ],
+  ["Home", { key: "Home", code: "Home", windowsVirtualKeyCode: 36, nativeVirtualKeyCode: 36 }],
+  ["End", { key: "End", code: "End", windowsVirtualKeyCode: 35, nativeVirtualKeyCode: 35 }],
+  [
+    "PageUp",
+    { key: "PageUp", code: "PageUp", windowsVirtualKeyCode: 33, nativeVirtualKeyCode: 33 },
+  ],
+  [
+    "PageDown",
+    { key: "PageDown", code: "PageDown", windowsVirtualKeyCode: 34, nativeVirtualKeyCode: 34 },
+  ],
+]);
+
+function appendTruncationNotice(content: string, limit: number, originalLength: number): string {
+  return (
+    content +
+    `\n\n[Truncated - showing first ${limit} of ${originalLength} characters. ${CONTENT_TRUNCATION_HINT}]`
+  );
+}
+
+function applyContentLimit(
+  content: string,
+  limit?: number,
+  originalLength = content.length,
+): { content: string; truncated: boolean; originalLength?: number } {
+  if (!limit || originalLength <= limit) {
+    return { content, truncated: false };
+  }
+
+  return {
+    content: appendTruncationNotice(content.slice(0, limit), limit, originalLength),
+    truncated: true,
+    originalLength,
+  };
+}
+
+function normalizeRuntimeContentPayload(
+  value: string | RuntimeContentPayload | undefined,
+  limit?: number,
+): { content: string; truncated?: boolean; originalLength?: number } {
+  if (typeof value === "string") {
+    const limited = applyContentLimit(value, limit);
+    return {
+      content: limited.content,
+      truncated: limited.truncated || undefined,
+      originalLength: limited.originalLength,
+    };
+  }
+
+  const content = value?.content ?? "";
+  if (value?.truncated) {
+    const originalLength = value.originalLength ?? content.length;
+    const effectiveLimit = limit && limit > 0 ? limit : content.length;
+    return {
+      content:
+        content.includes("[Truncated - showing first") || effectiveLimit === 0
+          ? content
+          : appendTruncationNotice(content, effectiveLimit, originalLength),
+      truncated: true,
+      originalLength,
+    };
+  }
+
+  const limited = applyContentLimit(content, limit, value?.originalLength ?? content.length);
+  return {
+    content: limited.content,
+    truncated: limited.truncated || undefined,
+    originalLength: limited.originalLength,
+  };
+}
+
+function buildKeyDispatchPayload(inputKey: string): KeyDispatchPayload {
+  const key = inputKey || "Enter";
+  const special = SPECIAL_KEY_PAYLOADS.get(key);
+  if (special) {
+    return { ...special };
+  }
+
+  if (key.length === 1) {
+    const upper = key.toUpperCase();
+    const code =
+      key >= "a" && key <= "z"
+        ? `Key${upper}`
+        : key >= "A" && key <= "Z"
+          ? `Key${key}`
+          : key >= "0" && key <= "9"
+            ? `Digit${key}`
+            : "Unidentified";
+    const keyCode = upper.charCodeAt(0);
+    return {
+      key,
+      code,
+      windowsVirtualKeyCode: keyCode,
+      nativeVirtualKeyCode: keyCode,
+      text: key,
+      unmodifiedText: key,
+    };
+  }
+
+  return {
+    key,
+    code: key,
+    windowsVirtualKeyCode: 0,
+    nativeVirtualKeyCode: 0,
+  };
+}
+
 export class ChromeCdpBrowserController implements BrowserController {
   private readonly connections = new Map<
     string,
@@ -846,7 +1036,6 @@ export class ChromeCdpBrowserController implements BrowserController {
   ): Promise<{ pid: number; cdpUrl: string; targetWsUrl: string }> {
     const { executablePath: explicitPath, userProfileDir, headless, userAgent } = options ?? {};
     const executablePath = discoverChrome(explicitPath);
-    const extension = loadControlExtension();
     let profileDir: string;
     if (userProfileDir === "default") {
       profileDir = resolveDefaultProfileDir();
@@ -867,13 +1056,9 @@ export class ChromeCdpBrowserController implements BrowserController {
       );
     }
 
-    const launchAttempts: Array<{ withExtension: boolean; headless: boolean }> = headless
-      ? [{ withExtension: false, headless: true }]
-      : [
-          { withExtension: true, headless: false },
-          { withExtension: false, headless: false },
-          { withExtension: false, headless: true },
-        ];
+    const launchAttempts: Array<{ headless: boolean }> = headless
+      ? [{ headless: true }]
+      : [{ headless: false }, { headless: true }];
 
     let lastError: Error | undefined;
 
@@ -885,13 +1070,6 @@ export class ChromeCdpBrowserController implements BrowserController {
         "--no-first-run",
         "--no-default-browser-check",
       ];
-
-      if (attempt.withExtension) {
-        args.push(
-          `--disable-extensions-except=${extension.extensionPath}`,
-          `--load-extension=${extension.extensionPath}`,
-        );
-      }
 
       if (attempt.headless) {
         args.push("--headless=new");
@@ -1141,6 +1319,52 @@ export class ChromeCdpBrowserController implements BrowserController {
     });
   }
 
+  private async focusTarget(conn: CdpClient, payload: InteractPayload): Promise<void> {
+    if (!payload.selector) {
+      return;
+    }
+
+    const expression = buildLocatorRuntimeExpression(
+      "payload",
+      payload,
+      `
+      const resolved = resolveWithFallbacks(payload.selector, payload.fallbackSelectors);
+      const el = resolved.element;
+      ensureInView(el);
+      if (typeof el.focus === 'function') {
+        el.focus();
+      }
+      return true;
+`,
+    );
+
+    await conn.send("Runtime.evaluate", {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+  }
+
+  private async dispatchKeyPress(conn: CdpClient, keyInput?: string): Promise<void> {
+    const payload = buildKeyDispatchPayload(keyInput ?? "Enter");
+    await conn.send("Input.dispatchKeyEvent", {
+      type: payload.text ? "keyDown" : "rawKeyDown",
+      key: payload.key,
+      code: payload.code,
+      windowsVirtualKeyCode: payload.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: payload.nativeVirtualKeyCode,
+      text: payload.text,
+      unmodifiedText: payload.unmodifiedText,
+    });
+    await conn.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: payload.key,
+      code: payload.code,
+      windowsVirtualKeyCode: payload.windowsVirtualKeyCode,
+      nativeVirtualKeyCode: payload.nativeVirtualKeyCode,
+    });
+  }
+
   async interact(targetWsUrl: string, payload: InteractPayload): Promise<string> {
     // Navigation actions — handled at CDP level, no in-page JS needed
     if (payload.action === "goBack") {
@@ -1212,7 +1436,12 @@ export class ChromeCdpBrowserController implements BrowserController {
       return await this.handleDialogAction(targetWsUrl, payload);
     }
 
-    if (payload.action === "click" || payload.action === "hover" || payload.action === "type") {
+    if (
+      payload.action === "click" ||
+      payload.action === "hover" ||
+      payload.action === "type" ||
+      payload.action === "press"
+    ) {
       return await this.withRetry(targetWsUrl, async (conn) => {
         await this.ensureEnabled(targetWsUrl);
 
@@ -1248,6 +1477,12 @@ export class ChromeCdpBrowserController implements BrowserController {
           return "hovered";
         }
 
+        if (payload.action === "press") {
+          await this.focusTarget(conn, payload);
+          await this.dispatchKeyPress(conn, payload.key);
+          return "pressed";
+        }
+
         const preparation = await this.prepareTypeTarget(conn, payload);
         if (preparation === "ready") {
           await conn.send("Input.insertText", { text: payload.text ?? "" });
@@ -1260,14 +1495,6 @@ export class ChromeCdpBrowserController implements BrowserController {
       "payload",
       payload,
       `
-      if (payload.action === 'press') {
-        const target = deepActiveElement();
-        if (!target) throw new Error('No active element to press key on');
-        const key = payload.key ?? 'Enter';
-        target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
-        target.dispatchEvent(new KeyboardEvent('keyup', { key, bubbles: true }));
-        return 'pressed';
-      }
       if (payload.action === 'waitFor') {
         const timeout = payload.timeoutMs ?? 2000;
         const started = Date.now();
@@ -1290,10 +1517,10 @@ export class ChromeCdpBrowserController implements BrowserController {
       if (payload.action === 'scroll') {
         if (payload.selector) {
           const el = resolveWithFallbacks(payload.selector, payload.fallbackSelectors).element;
-          el.scrollBy({ left: payload.scrollX ?? 0, top: payload.scrollY ?? 0, behavior: 'smooth' });
+          el.scrollBy({ left: payload.scrollX ?? 0, top: payload.scrollY ?? 0 });
           return 'scrolled element';
         }
-        window.scrollBy({ left: payload.scrollX ?? 0, top: payload.scrollY ?? 0, behavior: 'smooth' });
+        window.scrollBy({ left: payload.scrollX ?? 0, top: payload.scrollY ?? 0 });
         return 'scrolled page';
       }
       if (payload.action === 'select') {
@@ -1326,40 +1553,283 @@ export class ChromeCdpBrowserController implements BrowserController {
   }
 
   async getContent(targetWsUrl: string, options: PageContentOptions): Promise<PageContentResult> {
+    if (options.mode === "summary") {
+      return await this.getSummaryContent(targetWsUrl, options);
+    }
+
     if (options.mode === "a11y") {
       const content = await this.getAccessibilityTree(targetWsUrl, options.selector);
-      return { mode: "a11y", content };
+      const limited = normalizeRuntimeContentPayload(content, options.maxChars);
+      return {
+        mode: "a11y",
+        content: limited.content,
+        truncated: limited.truncated,
+        originalLength: limited.originalLength,
+      };
     }
 
     const expression = buildLocatorRuntimeExpression(
       "options",
       options,
       `
-      if (options.mode === 'title') return document.title ?? '';
+      const limit =
+        typeof options.maxChars === 'number' && Number.isFinite(options.maxChars) && options.maxChars > 0
+          ? Math.floor(options.maxChars)
+          : null;
+
+      function serializeContent(content) {
+        const normalized = typeof content === 'string' ? content : String(content ?? '');
+        const originalLength = normalized.length;
+        if (limit !== null && originalLength > limit) {
+          return { content: normalized.slice(0, limit), truncated: true, originalLength };
+        }
+        return { content: normalized, truncated: false, originalLength };
+      }
+
+      if (options.mode === 'title') return serializeContent(document.title ?? '');
       if (options.mode === 'html') {
         if (options.selector) {
           const el = resolveLocator(options.selector);
-          return el ? el.outerHTML : '';
+          return serializeContent(el ? el.outerHTML : '');
         }
-        return document.documentElement?.outerHTML ?? '';
+        return serializeContent(document.documentElement?.outerHTML ?? '');
       }
       if (options.selector) {
         const el = resolveLocator(options.selector);
-        return el ? el.innerText ?? '' : '';
+        return serializeContent(el ? el.innerText ?? '' : '');
       }
-      return document.body?.innerText ?? '';
+      return serializeContent(document.body?.innerText ?? '');
 `,
     );
 
     return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
-      const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-      });
-      const content = result.result.value ?? "";
-      return { mode: options.mode, content };
+      const result = await conn.send<{ result: { value?: RuntimeContentPayload } }>(
+        "Runtime.evaluate",
+        {
+          expression,
+          returnByValue: true,
+          awaitPromise: true,
+        },
+      );
+      const limited = normalizeRuntimeContentPayload(result.result.value, options.maxChars);
+      return {
+        mode: options.mode,
+        content: limited.content,
+        truncated: limited.truncated,
+        originalLength: limited.originalLength,
+      };
     });
+  }
+
+  private summarizeInteractiveElements(result: InteractiveElementsResult): {
+    primaryActions: Record<string, unknown>[];
+    inputs: Record<string, unknown>[];
+  } {
+    const primaryActions: Record<string, unknown>[] = [];
+    const inputs: Record<string, unknown>[] = [];
+
+    for (const element of result.elements) {
+      if (
+        primaryActions.length < 8 &&
+        (element.role === "button" || element.role === "link" || element.role === "custom")
+      ) {
+        primaryActions.push({
+          role: element.role,
+          text: element.text,
+          selector: element.selector,
+          fallbackSelectors: element.fallbackSelectors,
+          href: element.href,
+        });
+      }
+
+      if (
+        inputs.length < 8 &&
+        (element.role === "input" ||
+          element.role === "textarea" ||
+          element.role === "select" ||
+          element.role === "checkbox" ||
+          element.role === "radio" ||
+          element.role === "contenteditable")
+      ) {
+        inputs.push({
+          role: element.role,
+          text: element.text,
+          selector: element.selector,
+          fallbackSelectors: element.fallbackSelectors,
+          inputType: element.inputType,
+          placeholder: element.placeholder,
+          ariaLabel: element.ariaLabel,
+        });
+      }
+
+      if (primaryActions.length >= 8 && inputs.length >= 8) {
+        break;
+      }
+    }
+
+    return { primaryActions, inputs };
+  }
+
+  private async getSummaryContent(
+    targetWsUrl: string,
+    options: PageContentOptions,
+  ): Promise<PageContentResult> {
+    const expression = buildLocatorRuntimeExpression(
+      "options",
+      options,
+      `
+      const scopeSelector = options.selector;
+      let scopeRoot = document.body ?? document.documentElement;
+      if (scopeSelector) {
+        try {
+          scopeRoot = resolveLocator(scopeSelector) ?? scopeRoot;
+        } catch {
+          scopeRoot = scopeRoot ?? document.documentElement;
+        }
+      }
+
+      function escapeAttr(value) {
+        return String(value ?? '').replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+      }
+
+      function uniqueValues(values, limit) {
+        const seen = new Set();
+        const results = [];
+        for (const value of values) {
+          const normalized = String(value ?? '').replace(/\\s+/g, ' ').trim();
+          if (!normalized || seen.has(normalized)) continue;
+          seen.add(normalized);
+          results.push(normalized.slice(0, 160));
+          if (results.length >= limit) break;
+        }
+        return results;
+      }
+
+      function textOf(el) {
+        if (!el) return '';
+        const ariaLabel = el.getAttribute && el.getAttribute('aria-label');
+        if (ariaLabel) return ariaLabel;
+        const text = el.innerText || el.textContent || '';
+        return text.replace(/\\s+/g, ' ').trim();
+      }
+
+      function frameSelector(frame) {
+        if (frame.id) return '#' + CSS.escape(frame.id);
+        const name = frame.getAttribute('name');
+        if (name) return 'iframe[name="' + escapeAttr(name) + '"]';
+        const title = frame.getAttribute('title');
+        if (title) return 'iframe[title="' + escapeAttr(title) + '"]';
+        const src = frame.getAttribute('src');
+        if (src) return 'iframe[src="' + escapeAttr(src) + '"]';
+        const parent = frame.parentElement;
+        if (!parent) return 'iframe';
+        const siblings = Array.from(parent.children).filter((candidate) => candidate.tagName === frame.tagName);
+        if (siblings.length === 1) return 'iframe';
+        return 'iframe:nth-of-type(' + (siblings.indexOf(frame) + 1) + ')';
+      }
+
+      const headingSelectors = 'h1,h2,h3,h4,h5,h6,[role="heading"]';
+      const landmarkSelectors = [
+        'main',
+        'nav',
+        'aside',
+        'header',
+        'footer',
+        '[role="main"]',
+        '[role="navigation"]',
+        '[role="banner"]',
+        '[role="complementary"]',
+        '[role="contentinfo"]',
+        '[role="search"]'
+      ].join(',');
+      const alertSelectors = '[role="alert"], [aria-live="assertive"], dialog[open], [aria-modal="true"]';
+
+      const headings = uniqueValues(
+        Array.from(scopeRoot.querySelectorAll(headingSelectors)).map((el) => textOf(el)),
+        8
+      );
+      const landmarks = uniqueValues(
+        Array.from(scopeRoot.querySelectorAll(landmarkSelectors)).map((el) => {
+          const role = el.getAttribute('role') || el.tagName.toLowerCase();
+          const label = textOf(el);
+          return label ? role + ' "' + label.slice(0, 80) + '"' : role;
+        }),
+        8
+      );
+      const alerts = uniqueValues(
+        Array.from(scopeRoot.querySelectorAll(alertSelectors)).map((el) => textOf(el)),
+        6
+      );
+
+      const allFrames = Array.from(scopeRoot.querySelectorAll('iframe'));
+      const frames = allFrames.slice(0, 8).map((frame) => {
+        let sameOrigin = false;
+        try {
+          sameOrigin = !!frame.contentDocument;
+        } catch {
+          sameOrigin = false;
+        }
+
+        return {
+          selector: frameSelector(frame),
+          name: frame.getAttribute('name') || undefined,
+          title: frame.getAttribute('title') || undefined,
+          src: frame.getAttribute('src') || frame.src || undefined,
+          sameOrigin,
+        };
+      });
+
+      return {
+        url: window.location.href,
+        title: document.title ?? '',
+        headings,
+        landmarks,
+        alerts,
+        frames,
+        crossOriginFrameCount: allFrames.filter((frame) => {
+          try {
+            return !frame.contentDocument;
+          } catch {
+            return true;
+          }
+        }).length,
+        hasMoreFrames: allFrames.length > frames.length,
+        scopedToSelector: scopeSelector || undefined,
+      };
+`,
+    );
+
+    const pageSummary = await this.withRetry(targetWsUrl, async (conn) => {
+      await this.ensureEnabled(targetWsUrl);
+      const result = await conn.send<{ result: { value?: Record<string, unknown> } }>(
+        "Runtime.evaluate",
+        {
+          expression,
+          returnByValue: true,
+          awaitPromise: true,
+        },
+      );
+      return result.result.value ?? {};
+    });
+    const elements = await this.getInteractiveElements(targetWsUrl, {
+      selector: options.selector,
+      visibleOnly: true,
+      limit: 24,
+    });
+    const elementSummary = this.summarizeInteractiveElements(elements);
+
+    return {
+      mode: "summary",
+      content: "",
+      structuredContent: {
+        mode: "summary",
+        ...pageSummary,
+        ...elementSummary,
+        totalInteractiveElements: elements.totalFound,
+        truncatedInteractiveElements: elements.truncated,
+      },
+    };
   }
 
   private formatAccessibilityTree(nodes: AccessibilityNode[]): string {
@@ -2155,9 +2625,35 @@ export class MockBrowserController implements BrowserController {
   async getContent(cdpUrl: string, options: PageContentOptions): Promise<PageContentResult> {
     const page = this.pages.get(cdpUrl);
     if (!page) throw new Error("mock page missing");
-    if (options.mode === "title") return { mode: "title", content: page.title };
-    if (options.mode === "html") return { mode: "html", content: page.html };
-    return { mode: "text", content: page.text };
+    if (options.mode === "summary") {
+      return {
+        mode: "summary",
+        content: "",
+        structuredContent: {
+          mode: "summary",
+          url: page.url,
+          title: page.title,
+          headings: [page.title],
+          landmarks: [],
+          alerts: [],
+          frames: [],
+          primaryActions: [],
+          inputs: [],
+          totalInteractiveElements: 0,
+          truncatedInteractiveElements: false,
+        },
+      };
+    }
+
+    const raw =
+      options.mode === "title" ? page.title : options.mode === "html" ? page.html : page.text;
+    const limited = applyContentLimit(raw, options.maxChars);
+    return {
+      mode: options.mode,
+      content: limited.content,
+      truncated: limited.truncated || undefined,
+      originalLength: limited.originalLength,
+    };
   }
 
   async getInteractiveElements(

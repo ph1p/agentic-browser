@@ -51,12 +51,14 @@ export class AgenticBrowserCore {
 
   async getPageContent(input: {
     sessionId: string;
-    mode: "title" | "text" | "html" | "a11y";
+    mode: "title" | "text" | "html" | "a11y" | "summary";
     selector?: string;
+    maxChars?: number;
   }) {
     return await this.api.getContent(input.sessionId, {
       mode: input.mode,
       selector: input.selector,
+      maxChars: input.maxChars,
     });
   }
 

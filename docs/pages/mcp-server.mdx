@@ -159,17 +159,20 @@ Navigation actions (`goBack`, `goForward`, `refresh`) and `dialog` don't require
 
 Get the current page content. MCP responses are compacted for LLMs so the model can understand page structure without parsing a large raw blob first.
 
-| Parameter   | Type                                          | Required | Default  | Description                                                                                        |
-| ----------- | --------------------------------------------- | -------- | -------- | -------------------------------------------------------------------------------------------------- |
-| `mode`      | `"title"` \| `"text"` \| `"html"` \| `"a11y"` | No       | `"text"` | Extraction mode                                                                                    |
-| `selector`  | string                                        | No       |          | CSS selector to scope content                                                                      |
-| `maxChars`  | number                                        | No       |          | Max characters to return (default: 8000 for text, 10000 for a11y, 4000 for html, no cap for title) |
-| `sessionId` | string                                        | No       |          | Uses active session if omitted                                                                     |
+| Parameter   | Type                                                         | Required | Default     | Description                                                                                                 |
+| ----------- | ------------------------------------------------------------ | -------- | ----------- | ----------------------------------------------------------------------------------------------------------- |
+| `mode`      | `"title"` \| `"text"` \| `"html"` \| `"a11y"` \| `"summary"` | No       | `"summary"` | Extraction mode                                                                                             |
+| `selector`  | string                                                       | No       |             | CSS selector to scope content                                                                               |
+| `maxChars`  | number                                                       | No       |             | Max characters to return (default: 8000 for text, 10000 for a11y, 4000 for html, ignored for summary/title) |
+| `sessionId` | string                                                       | No       |             | Uses active session if omitted                                                                              |
 
-Content is automatically truncated at the default `maxChars` limit. When truncated, the response includes a `truncated: true` flag and a notice. Use a CSS `selector` to scope content instead of raising the limit.
+`summary` is the recommended first read because it returns a low-token overview with `title`, `headings`, `landmarks`, `primaryActions`, `inputs`, `alerts`, and iframe metadata, including whether frames are same-origin or cross-origin.
+
+Text, HTML, and accessibility content are automatically truncated at the default `maxChars` limit. When truncated, the response includes a `truncated: true` flag and a notice. Use a CSS `selector` to scope content instead of raising the limit.
 
 **Response shape by mode:**
 
+- `summary`: `{ mode, url, title, headings, landmarks, primaryActions, inputs, alerts, frames, totalInteractiveElements, truncatedInteractiveElements }`
 - `title`: `{ mode, content, truncated }`
 - `text`: `{ mode, content, truncated, summaryLines, previewLines }`
 - `a11y`: `{ mode, content, truncated, headings, landmarks, actions, inputs, previewLines }`
@@ -264,10 +267,10 @@ A typical sequence an AI assistant would use:
 
 1. `browser_start_session` — optional, launch Chrome explicitly
 2. `browser_navigate` with `url: "https://github.com/login"` — cookie dismissal runs automatically after successful navigation
-3. `browser_get_content` with `mode: "a11y"` — get fast structure: headings, landmarks, actions, inputs
+3. `browser_get_content` with `mode: "summary"` — get the low-token overview first
 4. `browser_get_elements` — get selectors, fallback selectors, and summarized primary actions
 5. `browser_interact` with `action: "type"`, `selector: "input[name=login]"`, `fallbackSelectors: [...]`, `text: "username"`
 6. `browser_interact` with `action: "type"`, `selector: "input[name=password]"`, `text: "***"`
 7. `browser_interact` with `action: "click"`, `selector: "input[type=submit]"`
-8. `browser_get_content` with `mode: "text"` — verify the next page using `summaryLines` and `previewLines`
+8. `browser_get_content` with `mode: "text"` or `mode: "a11y"` only when the summary is not enough
 9. `browser_stop_session` — done

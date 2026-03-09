@@ -90,6 +90,9 @@ agentic-browser agent cookies
 ### Get Content
 
 ```bash
+# Low-token overview (default mode)
+agentic-browser agent content --mode summary
+
 # Page title
 agentic-browser agent content --mode title
 
@@ -180,9 +183,9 @@ agentic-browser command:run $SID cmd-2 interact '{"action":"click","selector":"#
 ### Page Content
 
 ```bash
-agentic-browser page:content <sessionId> --mode text
-agentic-browser page:content <sessionId> --mode html --selector main
+agentic-browser page:content <sessionId> --mode summary
 agentic-browser page:content <sessionId> --mode title
+agentic-browser page:content <sessionId> --mode html --selector main
 ```
 
 ### Memory

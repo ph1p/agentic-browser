@@ -10,6 +10,13 @@ import {
 
 let core: AgenticBrowserCore;
 let activeSessionId: string | undefined;
+const DEFAULT_MCP_MAX_CHARS: Record<string, number | undefined> = {
+  summary: undefined,
+  title: undefined,
+  text: 8000,
+  a11y: 10000,
+  html: 4000,
+};
 
 function getCore(): AgenticBrowserCore {
   if (!core) {
@@ -179,11 +186,11 @@ server.tool(
 
 server.tool(
   "browser_get_content",
-  'Get the current page content. Modes: "text" (readable text), "a11y" (accessibility tree — best for understanding page structure), "title" (page title only), "html" (raw HTML). Use "a11y" to see the full page hierarchy with roles, names, and states. A session is auto-started if needed.',
+  'Get the current page content. Modes: "summary" (recommended low-token overview with headings, actions, inputs, alerts, and iframe awareness), "text" (readable text), "a11y" (accessibility tree for deeper structure), "title" (page title only), "html" (raw HTML). A session is auto-started if needed.',
   {
     mode: z
-      .enum(["title", "text", "html", "a11y"])
-      .default("text")
+      .enum(["title", "text", "html", "a11y", "summary"])
+      .default("summary")
       .describe("Content extraction mode"),
     selector: z
       .string()
@@ -193,17 +200,21 @@ server.tool(
       .number()
       .optional()
       .describe(
-        "Maximum characters to return (default: 12000 for text/a11y, 6000 for html, no cap for title). Use a CSS selector to scope content instead of raising this limit.",
+        "Maximum characters to return (default: 8000 for text, 10000 for a11y, 4000 for html, ignored for summary/title). Use a CSS selector to scope content instead of raising this limit.",
       ),
     sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
   },
   async ({ mode, selector, maxChars, sessionId }) => {
     const sid = await resolveSession(sessionId);
-    const result = await getCore().getPageContent({ sessionId: sid, mode, selector });
+    const effectiveMaxChars = maxChars ?? DEFAULT_MCP_MAX_CHARS[mode];
+    const result = await getCore().getPageContent({
+      sessionId: sid,
+      mode,
+      selector,
+      maxChars: effectiveMaxChars,
+    });
     return {
-      content: [
-        { type: "text" as const, text: JSON.stringify(compactPageContent(result, maxChars)) },
-      ],
+      content: [{ type: "text" as const, text: JSON.stringify(compactPageContent(result)) }],
     };
   },
 );

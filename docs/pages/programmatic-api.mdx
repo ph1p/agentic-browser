@@ -142,11 +142,12 @@ const result = await core.runCommand({
 ```ts
 const content = await core.getPageContent({
   sessionId: session.sessionId,
-  mode: "text", // "title" | "text" | "html" | "a11y"
+  mode: "summary", // "title" | "text" | "html" | "a11y" | "summary"
   selector: "main", // optional: scope to element
 });
 
-// Use "a11y" mode to get the accessibility tree — best for understanding page structure
+// "summary" returns a low-token overview with headings, landmarks, actions, inputs, alerts, and iframe info
+// Use "a11y" mode when you need the deeper accessibility tree
 const a11yTree = await core.getPageContent({
   sessionId: session.sessionId,
   mode: "a11y",

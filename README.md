@@ -113,7 +113,7 @@ agentic-browser agent start --user-agent "MyBot/1.0"
 agentic-browser agent status
 agentic-browser agent navigate https://example.com
 agentic-browser agent click "#login"
-agentic-browser agent content --mode text
+agentic-browser agent content --mode summary
 agentic-browser agent content --mode html --selector main
 agentic-browser agent elements
 agentic-browser agent elements --roles button,link --limit 20
@@ -155,6 +155,8 @@ Returns a JSON array of elements with selectors and fallback selectors usable in
 MCP responses are compact — `visible`, `actions`, and `tagName` are omitted to reduce token usage, and `enabled` is omitted when it is `true`. Responses also include a `summary` block with `countsByRole` and `primaryActions` so an LLM can identify the main controls faster. The full element shape is available via the programmatic API.
 
 When an element lives inside an open shadow root or a same-origin iframe, discovery returns a composed locator using `>>>` to cross boundaries, for example `iframe[name="checkout"] >>> button[aria-label="Pay"]`. The same locator string works with `agent click`, `agent type`, MCP `browser_interact`, and fallback selectors.
+
+`agent content` and MCP `browser_get_content` now default to `summary`, which returns a low-token overview with `title`, `headings`, `landmarks`, `primaryActions`, `inputs`, `alerts`, and iframe metadata. Use `a11y` when you need the deeper accessibility structure, and `text` or `html` only when you need raw content.
 
 ````
 
@@ -225,8 +227,8 @@ More `interact` actions:
 ### 4. Read Page Content
 
 ```bash
+agentic-browser page:content <sessionId> --mode summary
 agentic-browser page:content <sessionId> --mode title
-agentic-browser page:content <sessionId> --mode text
 agentic-browser page:content <sessionId> --mode html --selector main
 ```
 

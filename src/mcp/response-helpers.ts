@@ -29,9 +29,36 @@ function truncateContent(content: string, limit?: number): { content: string; tr
   return {
     content:
       content.slice(0, limit) +
-      `\n\n[Truncated — showing first ${limit} of ${originalLength} characters. Use a CSS selector to scope the content.]`,
+      `\n\n[Truncated - showing first ${limit} of ${originalLength} characters. Use a CSS selector to scope the content, or use mode="summary" for a lower-token overview.]`,
     truncated: true,
   };
+}
+
+function resolveCompactedContent(
+  result: PageContentResult,
+  limit?: number,
+): { content: string; truncated: boolean } {
+  if (result.truncated) {
+    return { content: result.content, truncated: true };
+  }
+  return truncateContent(result.content, limit);
+}
+
+function parseStructuredSummary(result: PageContentResult): Record<string, unknown> | undefined {
+  if (result.structuredContent) {
+    return result.structuredContent;
+  }
+
+  if (!result.content) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(result.content) as Record<string, unknown>;
+    return parsed && typeof parsed === "object" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function summarizeTextContent(content: string): {
@@ -110,9 +137,19 @@ export function compactPageContent(
     a11y: 10000,
     html: 4000,
     title: undefined,
+    summary: undefined,
   };
   const limit = maxChars ?? defaultMaxChars[result.mode];
-  const truncated = truncateContent(result.content, limit);
+
+  if (result.mode === "summary") {
+    const structured = parseStructuredSummary(result);
+    if (structured) {
+      return { mode: "summary", ...structured, truncated: false };
+    }
+    return { mode: "summary", content: result.content, truncated: false };
+  }
+
+  const truncated = resolveCompactedContent(result, limit);
 
   if (result.mode === "title") {
     return { ...result, truncated: false };
@@ -124,6 +161,7 @@ export function compactPageContent(
       mode: result.mode,
       content: truncated.content,
       truncated: truncated.truncated,
+      originalLength: result.originalLength,
       summaryLines: summary.summaryLines,
       previewLines: summary.previewLines,
     };
@@ -135,6 +173,7 @@ export function compactPageContent(
       mode: result.mode,
       content: truncated.content,
       truncated: truncated.truncated,
+      originalLength: result.originalLength,
       headings: summary.headings,
       landmarks: summary.landmarks,
       actions: summary.actions,
@@ -147,6 +186,7 @@ export function compactPageContent(
     mode: result.mode,
     content: truncated.content,
     truncated: truncated.truncated,
+    originalLength: result.originalLength,
   };
 }
 

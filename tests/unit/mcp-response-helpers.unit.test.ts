@@ -42,6 +42,44 @@ describe("compactPageContent", () => {
       inputs: ['textbox "Search"'],
     });
   });
+
+  it("returns structured summary mode content directly", () => {
+    const result = compactPageContent({
+      mode: "summary",
+      content: "",
+      structuredContent: {
+        mode: "summary",
+        title: "Checkout",
+        primaryActions: [{ selector: "#pay", text: "Pay now" }],
+        frames: [{ selector: 'iframe[title="3DS"]', sameOrigin: false }],
+      },
+    });
+
+    expect(result).toEqual({
+      mode: "summary",
+      title: "Checkout",
+      primaryActions: [{ selector: "#pay", text: "Pay now" }],
+      frames: [{ selector: 'iframe[title="3DS"]', sameOrigin: false }],
+      truncated: false,
+    });
+  });
+
+  it("does not retruncate content already capped in the controller", () => {
+    const result = compactPageContent({
+      mode: "text",
+      content:
+        'abcdef\n\n[Truncated - showing first 6 of 12 characters. Use a CSS selector to scope the content, or use mode="summary" for a lower-token overview.]',
+      truncated: true,
+      originalLength: 12,
+    });
+
+    expect(result).toMatchObject({
+      mode: "text",
+      truncated: true,
+      originalLength: 12,
+    });
+    expect(result.content).toContain("[Truncated - showing first 6 of 12 characters.");
+  });
 });
 
 describe("compactInteractiveElementsResult", () => {

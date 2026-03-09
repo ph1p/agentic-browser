@@ -166,13 +166,18 @@ export async function agentDismissCookies(runtime: Runtime) {
 
 export async function agentContent(
   runtime: Runtime,
-  input: { mode: "title" | "text" | "html" | "a11y"; selector?: string },
+  input: {
+    mode: "title" | "text" | "html" | "a11y" | "summary";
+    selector?: string;
+    maxChars?: number;
+  },
 ) {
   const sessionId = requireSessionId(runtime);
   await ensureReady(runtime, sessionId);
   const result = await runtime.api.getContent(sessionId, {
     mode: input.mode,
     selector: input.selector,
+    maxChars: input.maxChars,
   });
   return { ok: true, action: "content", ...result };
 }
