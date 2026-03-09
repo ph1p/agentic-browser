@@ -104,12 +104,17 @@ function scoreInsight(
 export class MemoryIndex {
   /** Domain → insights index, rebuilt lazily when insight list changes. */
   private domainIndex = new Map<string, TaskInsight[]>();
-  private indexedInsights: TaskInsight[] | null = null;
-  private indexedLength = 0;
+  private indexedRefs: TaskInsight[] = [];
 
-  /** Rebuild the domain index when the underlying array or its size changes. */
+  /** Rebuild the domain index when the insight object set changes. */
   private ensureIndex(insights: TaskInsight[]): void {
-    if (this.indexedInsights === insights && this.indexedLength === insights.length) return;
+    if (
+      this.indexedRefs.length === insights.length &&
+      insights.every((insight, index) => this.indexedRefs[index] === insight)
+    ) {
+      return;
+    }
+
     this.domainIndex.clear();
     for (const insight of insights) {
       const domain = normalize(insight.siteDomain);
@@ -120,8 +125,7 @@ export class MemoryIndex {
       }
       bucket.push(insight);
     }
-    this.indexedInsights = insights;
-    this.indexedLength = insights.length;
+    this.indexedRefs = insights.slice();
   }
 
   search(insights: TaskInsight[], input: SearchInput): MemorySearchResult[] {

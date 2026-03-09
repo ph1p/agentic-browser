@@ -179,7 +179,7 @@ Content is automatically truncated at the default `maxChars` limit. When truncat
 
 ### `browser_get_elements`
 
-Discover interactive elements on the page. Returns CSS selectors and fallback selectors usable with `browser_interact`. Pass `fallbackSelectors` to `browser_interact` for automatic retry when the primary selector breaks.
+Discover interactive elements on the page. Returns selectors and fallback selectors usable with `browser_interact`. Pass `fallbackSelectors` to `browser_interact` for automatic retry when the primary selector breaks. When an element is inside an open shadow root or a same-origin iframe, the selector uses `>>>` to cross that boundary.
 
 | Parameter     | Type     | Required | Default | Description                                                                                                                 |
 | ------------- | -------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |

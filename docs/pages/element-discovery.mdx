@@ -1,12 +1,12 @@
 # Element Discovery
 
-LLMs need to know what's on a page before they can interact with it. The element discovery system scans the DOM and returns a structured list of all interactive elements with CSS selectors you can use directly.
+LLMs need to know what's on a page before they can interact with it. The element discovery system scans the DOM and returns a structured list of all interactive elements with selectors you can use directly.
 
 ## Why?
 
 Without element discovery, an LLM has to:
 
-- Guess CSS selectors (fragile, often wrong)
+- Guess selectors by hand (fragile, often wrong)
 - Parse raw HTML (noisy, token-expensive)
 - Rely on memory from previous sessions (stale if the site changed)
 
@@ -41,6 +41,8 @@ const result = await core.getInteractiveElements({
 ## Output Structure
 
 Each element includes a primary `selector` and optional `fallbackSelectors` — alternate unique selectors that can be passed to `browser_interact` for automatic retry if the primary selector breaks.
+
+Selectors may be plain CSS selectors or composed locators. When discovery crosses an open shadow root or a same-origin iframe, it joins the boundary path with `>>>`, for example `iframe[name="checkout"] >>> button[aria-label="Pay"]`.
 
 **Programmatic API** returns the full element shape:
 
@@ -127,7 +129,7 @@ Duplicate elements (e.g. `<button role="button">`) are deduplicated automaticall
 
 ## Selector Generation
 
-Each element gets a unique CSS selector, generated with this priority:
+Each element gets a unique selector, generated with this priority:
 
 1. **`#id`** — if the element has an `id` attribute
 2. **`tag[name="..."]`** — if `name` is unique
@@ -139,6 +141,15 @@ Each element gets a unique CSS selector, generated with this priority:
 8. **Composite path** — anchored at nearest ancestor with `id` (e.g. `#container > div > button`) instead of walking to the root
 
 The generated selectors are designed to be stable and usable directly with the `interact` command.
+
+### Nested Roots
+
+If an element is inside an open shadow root or a same-origin iframe, the scanner prefixes the local selector with the boundary selector using `>>>`:
+
+- `custom-checkout >>> button[aria-label="Pay"]`
+- `iframe[name="auth"] >>> input[name="email"]`
+
+`browser_interact` and the CLI agent commands understand this format directly.
 
 ### Fallback Selectors
 

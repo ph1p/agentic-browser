@@ -132,7 +132,7 @@ agentic-browser agent elements --roles button,link,input --visible-only --limit 
 agentic-browser agent elements --selector "#main-content"
 ```
 
-Returns a JSON array of elements with CSS selectors and fallback selectors usable in the typed agent commands like `agent click`, `agent type`, and `agent select`:
+Returns a JSON array of elements with selectors and fallback selectors usable in the typed agent commands like `agent click`, `agent type`, and `agent select`:
 
 ```json
 {
@@ -153,6 +153,8 @@ Returns a JSON array of elements with CSS selectors and fallback selectors usabl
 ```
 
 MCP responses are compact — `visible`, `actions`, and `tagName` are omitted to reduce token usage, and `enabled` is omitted when it is `true`. Responses also include a `summary` block with `countsByRole` and `primaryActions` so an LLM can identify the main controls faster. The full element shape is available via the programmatic API.
+
+When an element lives inside an open shadow root or a same-origin iframe, discovery returns a composed locator using `>>>` to cross boundaries, for example `iframe[name="checkout"] >>> button[aria-label="Pay"]`. The same locator string works with `agent click`, `agent type`, MCP `browser_interact`, and fallback selectors.
 
 ````
 

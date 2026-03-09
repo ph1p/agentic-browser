@@ -1,6 +1,27 @@
-import { describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
 
-import { ChromeCdpBrowserController } from "../../src/session/browser-controller.js";
+import { describe, expect, it } from "vitest";
+import type WebSocket from "ws";
+
+import { CdpConnection, ChromeCdpBrowserController } from "../../src/session/browser-controller.js";
+
+class FakeWebSocket extends EventEmitter {
+  readyState = 1;
+  readonly sentPayloads: string[] = [];
+
+  send(payload: string): void {
+    this.sentPayloads.push(payload);
+  }
+
+  close(): void {
+    this.readyState = 3;
+    this.emit("close");
+  }
+
+  emitMessage(message: Record<string, unknown>): void {
+    this.emit("message", Buffer.from(JSON.stringify(message), "utf8"));
+  }
+}
 
 class FakeConnection {
   readonly sent: Array<{ method: string; params?: Record<string, unknown> }> = [];
@@ -10,12 +31,19 @@ class FakeConnection {
     private readonly behavior: {
       runtimeValue?: string | unknown;
       failOnRuntimeEvaluate?: boolean;
+      sendHandler?: (
+        method: string,
+        params?: Record<string, unknown>,
+      ) => unknown | Promise<unknown>;
       waitReject?: boolean;
     } = {},
   ) {}
 
   async send<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
     this.sent.push({ method, params });
+    if (this.behavior.sendHandler) {
+      return (await this.behavior.sendHandler(method, params)) as T;
+    }
     if (method === "Runtime.evaluate" && this.behavior.failOnRuntimeEvaluate) {
       throw new Error("runtime evaluate failed");
     }
@@ -35,6 +63,39 @@ class FakeConnection {
 
   close(): void {}
 }
+
+describe("CdpConnection", () => {
+  it("resolves all waiters and listeners for the same event", async () => {
+    const ws = new FakeWebSocket();
+    const conn = new CdpConnection(ws as unknown as WebSocket);
+    const handled: unknown[] = [];
+    conn.onEvent("Page.loadEventFired", (params) => {
+      handled.push(params);
+    });
+
+    const waiter1 = conn.waitForEvent<{ ts: number }>("Page.loadEventFired");
+    const waiter2 = conn.waitForEvent<{ ts: number }>("Page.loadEventFired");
+
+    ws.emitMessage({ method: "Page.loadEventFired", params: { ts: 1 } });
+
+    await expect(waiter1).resolves.toEqual({ ts: 1 });
+    await expect(waiter2).resolves.toEqual({ ts: 1 });
+    expect(handled).toEqual([{ ts: 1 }]);
+  });
+
+  it("rejects pending requests and waiters when the socket closes", async () => {
+    const ws = new FakeWebSocket();
+    const conn = new CdpConnection(ws as unknown as WebSocket);
+
+    const sendPromise = conn.send("Page.enable");
+    const waitPromise = conn.waitForEvent("Page.loadEventFired");
+
+    ws.close();
+
+    await expect(sendPromise).rejects.toThrow("CDP connection closed");
+    await expect(waitPromise).rejects.toThrow("CDP connection closed");
+  });
+});
 
 describe("ChromeCdpBrowserController connection reuse", () => {
   it("reuses a single connection and enables domains once", async () => {
@@ -84,6 +145,104 @@ describe("ChromeCdpBrowserController connection reuse", () => {
     expect(result).toBe("http://example.com");
     expect(conn.waitCalls).toContain("Page.loadEventFired");
     expect(conn.waitCalls).toContain("Page.frameStoppedLoading");
+  });
+
+  it("uses a partial AX tree when a selector scopes a11y content", async () => {
+    const conn = new FakeConnection({
+      sendHandler(method) {
+        if (method === "Runtime.evaluate") {
+          return { result: { objectId: "ax-root-1" } };
+        }
+        if (method === "Accessibility.getPartialAXTree") {
+          return {
+            nodes: [
+              {
+                nodeId: "node-1",
+                parentId: "outside-scope",
+                role: { value: "main" },
+                name: { value: "Main content" },
+                childIds: ["node-2"],
+              },
+              {
+                nodeId: "node-2",
+                parentId: "node-1",
+                role: { value: "heading" },
+                name: { value: "Welcome" },
+              },
+            ],
+          };
+        }
+        return {};
+      },
+    });
+    const controller = new ChromeCdpBrowserController("/tmp", async () => conn);
+
+    const result = await controller.getContent("ws://test", {
+      mode: "a11y",
+      selector: "#main",
+    });
+
+    expect(result.mode).toBe("a11y");
+    expect(result.content).toBe('main "Main content"\n  heading "Welcome"');
+    expect(conn.sent.map((entry) => entry.method)).toContain("Accessibility.getPartialAXTree");
+    expect(conn.sent.map((entry) => entry.method)).not.toContain("Accessibility.getFullAXTree");
+    const evaluateCall = conn.sent.find((entry) => entry.method === "Runtime.evaluate");
+    expect(evaluateCall?.params?.expression).toContain("resolveLocator(selector)");
+  });
+
+  it("uses CDP mouse events for click interactions", async () => {
+    const conn = new FakeConnection({
+      sendHandler(method) {
+        if (method === "Runtime.evaluate") {
+          return { result: { value: { x: 120, y: 45 } } };
+        }
+        return {};
+      },
+    });
+    const controller = new ChromeCdpBrowserController("/tmp", async () => conn);
+
+    const result = await controller.interact("ws://test", {
+      action: "click",
+      selector: "#login",
+    });
+
+    expect(result).toBe("clicked");
+    expect(
+      conn.sent
+        .filter((entry) => entry.method === "Input.dispatchMouseEvent")
+        .map((entry) => ({
+          type: entry.params?.type,
+          x: entry.params?.x,
+          y: entry.params?.y,
+        })),
+    ).toEqual([
+      { type: "mouseMoved", x: 120, y: 45 },
+      { type: "mousePressed", x: 120, y: 45 },
+      { type: "mouseReleased", x: 120, y: 45 },
+    ]);
+  });
+
+  it("uses CDP text insertion for type interactions", async () => {
+    const conn = new FakeConnection({
+      sendHandler(method) {
+        if (method === "Runtime.evaluate") {
+          return { result: { value: "ready" } };
+        }
+        return {};
+      },
+    });
+    const controller = new ChromeCdpBrowserController("/tmp", async () => conn);
+
+    const result = await controller.interact("ws://test", {
+      action: "type",
+      selector: "#email",
+      text: "hello@example.com",
+    });
+
+    expect(result).toBe("typed");
+    expect(conn.sent.find((entry) => entry.method === "Input.insertText")?.params?.text).toBe(
+      "hello@example.com",
+    );
   });
 });
 
@@ -172,5 +331,7 @@ describe("ChromeCdpBrowserController.getInteractiveElements", () => {
     expect(expr).toContain('"visibleOnly":false');
     expect(expr).toContain('"limit":5');
     expect(expr).toContain('"selector":"#main"');
+    expect(expr).toContain("shadowRoot");
+    expect(expr).toContain("contentDocument");
   });
 });

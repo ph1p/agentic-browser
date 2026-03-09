@@ -98,4 +98,32 @@ describe("memory ranking", () => {
 
     expect(results[0]?.selectorAliases).toEqual([]);
   });
+
+  it("refreshes the domain index when an insight object is replaced in the same array", () => {
+    const index = new MemoryIndex();
+    const insights = [insight({ insightId: "replace-me", freshness: "fresh" })];
+
+    expect(
+      index.search(insights, {
+        taskIntent: "navigate:example.com",
+        siteDomain: "example.com",
+      })[0]?.freshness,
+    ).toBe("fresh");
+
+    insights[0] = insight({
+      insightId: "replace-me",
+      freshness: "stale",
+      selectorAliases: [{ alias: "search", selector: "#search", fallbackSelectors: [] }],
+    });
+
+    const results = index.search(insights, {
+      taskIntent: "navigate:example.com",
+      siteDomain: "example.com",
+    });
+
+    expect(results[0]?.freshness).toBe("stale");
+    expect(results[0]?.selectorAliases).toEqual([
+      { alias: "search", selector: "#search", fallbackSelectors: [] },
+    ]);
+  });
 });

@@ -129,6 +129,19 @@ interface CdpTarget {
   webSocketDebuggerUrl?: string;
 }
 
+interface AccessibilityNode {
+  nodeId: string;
+  parentId?: string;
+  backendDOMNodeId?: number;
+  role?: { value: string };
+  name?: { value: string };
+  value?: { value: string };
+  description?: { value: string };
+  properties?: Array<{ name: string; value: { value: unknown } }>;
+  childIds?: string[];
+  ignored?: boolean;
+}
+
 interface CdpClient {
   send<T = unknown>(
     method: string,
@@ -140,18 +153,136 @@ interface CdpClient {
   close(): void;
 }
 
-class CdpConnection implements CdpClient {
+export class CdpConnection implements CdpClient {
   private nextId = 0;
+  private readonly pendingRequests = new Map<
+    number,
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }
+  >();
+  private readonly pendingEvents = new Map<
+    string,
+    Array<{
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }>
+  >();
+  private readonly eventHandlers = new Map<string, Set<(params: unknown) => void>>();
+  private closed = false;
 
-  constructor(private readonly ws: WebSocket) {}
+  constructor(private readonly ws: WebSocket) {
+    this.ensureListening();
+  }
 
   static async connect(targetWsUrl: string): Promise<CdpConnection> {
     const ws = new WebSocket(targetWsUrl);
     await new Promise<void>((resolve, reject) => {
-      ws.once("open", () => resolve());
-      ws.once("error", (err) => reject(err));
+      const onOpen = () => {
+        ws.off("error", onError);
+        resolve();
+      };
+      const onError = (err: Error) => {
+        ws.off("open", onOpen);
+        reject(err);
+      };
+      ws.once("open", onOpen);
+      ws.once("error", onError);
     });
     return new CdpConnection(ws);
+  }
+
+  private ensureListening(): void {
+    this.ws.on("message", this.handleMessage);
+    this.ws.once("close", this.handleClose);
+    this.ws.on("error", this.handleError);
+  }
+
+  private readonly handleMessage = (raw: WebSocket.RawData) => {
+    let message: {
+      id?: number;
+      method?: string;
+      result?: unknown;
+      error?: { message: string };
+      params?: unknown;
+    };
+    try {
+      message = JSON.parse(raw.toString("utf8")) as typeof message;
+    } catch {
+      return;
+    }
+
+    if (typeof message.id === "number") {
+      const pending = this.pendingRequests.get(message.id);
+      if (!pending) {
+        return;
+      }
+      this.pendingRequests.delete(message.id);
+      clearTimeout(pending.timeout);
+      if (message.error) {
+        pending.reject(new Error(message.error.message));
+        return;
+      }
+      pending.resolve(message.result ?? {});
+      return;
+    }
+
+    if (!message.method) {
+      return;
+    }
+
+    const params = message.params ?? {};
+    const handlers = this.eventHandlers.get(message.method);
+    if (handlers) {
+      for (const handler of handlers) {
+        handler(params);
+      }
+    }
+
+    const waiters = this.pendingEvents.get(message.method);
+    if (!waiters?.length) {
+      return;
+    }
+    this.pendingEvents.delete(message.method);
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timeout);
+      waiter.resolve(params);
+    }
+  };
+
+  private readonly handleError = (err: Error) => {
+    this.failAllPending(err);
+  };
+
+  private readonly handleClose = () => {
+    this.failAllPending(new Error("CDP connection closed"));
+  };
+
+  private failAllPending(error: Error): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    this.ws.off("message", this.handleMessage);
+    this.ws.off("error", this.handleError);
+
+    for (const pending of this.pendingRequests.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+    }
+    this.pendingRequests.clear();
+
+    for (const waiters of this.pendingEvents.values()) {
+      for (const waiter of waiters) {
+        clearTimeout(waiter.timeout);
+        waiter.reject(error);
+      }
+    }
+    this.pendingEvents.clear();
+    this.eventHandlers.clear();
   }
 
   async send<T = unknown>(
@@ -167,30 +298,14 @@ class CdpConnection implements CdpClient {
 
     return await new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.ws.off("message", onMessage);
+        this.pendingRequests.delete(id);
         reject(new Error(`CDP call '${method}' timed out after ${timeoutMs}ms`));
       }, timeoutMs);
-
-      const onMessage = (raw: WebSocket.RawData) => {
-        const message = JSON.parse(raw.toString("utf8")) as {
-          id?: number;
-          result?: T;
-          error?: { message: string };
-        };
-        if (message.id !== id) {
-          return;
-        }
-
-        clearTimeout(timeout);
-        this.ws.off("message", onMessage);
-        if (message.error) {
-          reject(new Error(message.error.message));
-          return;
-        }
-        resolve((message.result ?? {}) as T);
-      };
-
-      this.ws.on("message", onMessage);
+      this.pendingRequests.set(id, {
+        resolve: (value) => resolve(value as T),
+        reject,
+        timeout,
+      });
       this.ws.send(JSON.stringify(payload));
     });
   }
@@ -198,44 +313,49 @@ class CdpConnection implements CdpClient {
   waitForEvent<T = unknown>(method: string, timeoutMs = 5000): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        this.ws.off("message", onMessage);
-        reject(new Error(`Timed out waiting for ${method}`));
-      }, timeoutMs);
-
-      const onMessage = (raw: WebSocket.RawData) => {
-        const message = JSON.parse(raw.toString("utf8")) as {
-          method?: string;
-          params?: T;
-        };
-        if (message.method !== method) {
+        const waiters = this.pendingEvents.get(method);
+        if (!waiters) {
+          reject(new Error(`Timed out waiting for ${method}`));
           return;
         }
-        clearTimeout(timeout);
-        this.ws.off("message", onMessage);
-        resolve((message.params ?? {}) as T);
-      };
-
-      this.ws.on("message", onMessage);
+        const next = waiters.filter((waiter) => waiter.timeout !== timeout);
+        if (next.length > 0) {
+          this.pendingEvents.set(method, next);
+        } else {
+          this.pendingEvents.delete(method);
+        }
+        reject(new Error(`Timed out waiting for ${method}`));
+      }, timeoutMs);
+      const waiters = this.pendingEvents.get(method) ?? [];
+      waiters.push({
+        resolve: (value) => resolve(value as T),
+        reject,
+        timeout,
+      });
+      this.pendingEvents.set(method, waiters);
     });
   }
 
   onEvent<T = unknown>(method: string, handler: (params: T) => void): () => void {
-    const onMessage = (raw: WebSocket.RawData) => {
-      const message = JSON.parse(raw.toString("utf8")) as {
-        method?: string;
-        params?: T;
-      };
-      if (message.method === method) {
-        handler((message.params ?? {}) as T);
-      }
+    const handlers = this.eventHandlers.get(method) ?? new Set<(params: unknown) => void>();
+    const wrapped = (params: unknown) => {
+      handler(params as T);
     };
-    this.ws.on("message", onMessage);
+    handlers.add(wrapped);
+    this.eventHandlers.set(method, handlers);
+
     return () => {
-      this.ws.off("message", onMessage);
+      const current = this.eventHandlers.get(method);
+      if (!current) return;
+      current.delete(wrapped);
+      if (current.size === 0) {
+        this.eventHandlers.delete(method);
+      }
     };
   }
 
   close(): void {
+    this.failAllPending(new Error("CDP connection closed"));
     this.ws.close();
   }
 }
@@ -382,6 +502,220 @@ interface DialogInfo {
   type: string;
   message: string;
   defaultPrompt?: string;
+}
+
+const LOCATOR_RUNTIME_HELPERS = String.raw`
+      const LOCATOR_SEPARATOR = ' >>> ';
+
+      function splitLocator(locator) {
+        return String(locator ?? '')
+          .split(/\s*>>>\s*/g)
+          .map((part) => part.trim())
+          .filter(Boolean);
+      }
+
+      function getFrameElementForDocument(doc) {
+        try {
+          return doc && doc.defaultView && doc.defaultView.frameElement ? doc.defaultView.frameElement : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function createComposedChain(node) {
+        const chain = [];
+        let current = node;
+        while (current) {
+          chain.push(current);
+          if (current.parentNode) {
+            current = current.parentNode;
+            continue;
+          }
+          if (current.host) {
+            current = current.host;
+            continue;
+          }
+          if (current.nodeType === Node.DOCUMENT_NODE) {
+            current = getFrameElementForDocument(current);
+            continue;
+          }
+          current = null;
+        }
+        return chain;
+      }
+
+      function isSameComposedTarget(left, right) {
+        if (!left || !right) return false;
+        const seen = new Set(createComposedChain(left));
+        for (const current of createComposedChain(right)) {
+          if (seen.has(current)) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function isWithinComposedSubtree(root, candidate) {
+        if (!root || !candidate) return false;
+        for (const current of createComposedChain(candidate)) {
+          if (current === root) {
+            return true;
+          }
+        }
+        return false;
+      }
+
+      function resolveLocator(locator) {
+        const parts = splitLocator(locator);
+        if (parts.length === 0) return null;
+
+        let root = document;
+        let element = null;
+        for (let index = 0; index < parts.length; index += 1) {
+          element = root.querySelector(parts[index]);
+          if (!element) return null;
+
+          if (index === parts.length - 1) {
+            return element;
+          }
+
+          if (element.tagName && element.tagName.toLowerCase() === 'iframe') {
+            let nextDocument = null;
+            try {
+              nextDocument = element.contentDocument;
+            } catch {
+              nextDocument = null;
+            }
+            if (!nextDocument) {
+              throw new Error('Unable to access iframe content for locator segment: ' + parts[index]);
+            }
+            root = nextDocument;
+            continue;
+          }
+
+          if (element.shadowRoot) {
+            root = element.shadowRoot;
+            continue;
+          }
+
+          throw new Error('Locator segment does not enter a shadow root or iframe: ' + parts[index]);
+        }
+
+        return element;
+      }
+
+      function resolveWithFallbacks(selector, fallbacks) {
+        let lastError = null;
+        const locators = [];
+        if (selector) locators.push(selector);
+        if (Array.isArray(fallbacks)) {
+          for (const fallback of fallbacks) {
+            locators.push(fallback);
+          }
+        }
+
+        for (const locator of locators) {
+          try {
+            const element = resolveLocator(locator);
+            if (element) {
+              return { element, locator };
+            }
+          } catch (error) {
+            lastError = error;
+          }
+        }
+
+        if (lastError) {
+          throw lastError;
+        }
+        throw new Error('Selector not found');
+      }
+
+      function ensureInView(element) {
+        if (element && typeof element.scrollIntoView === 'function') {
+          element.scrollIntoView({ block: 'center', inline: 'center' });
+        }
+      }
+
+      function toMainFramePoint(element) {
+        const rect = element.getBoundingClientRect();
+        let x = rect.left + rect.width / 2;
+        let y = rect.top + rect.height / 2;
+        let doc = element.ownerDocument;
+
+        while (doc) {
+          const frameElement = getFrameElementForDocument(doc);
+          if (!frameElement) {
+            break;
+          }
+          const frameRect = frameElement.getBoundingClientRect();
+          x += frameRect.left;
+          y += frameRect.top;
+          doc = frameElement.ownerDocument;
+        }
+
+        return { x, y, width: rect.width, height: rect.height };
+      }
+
+      function getTopFrameElement(element) {
+        let topFrame = null;
+        let doc = element.ownerDocument;
+        while (doc) {
+          const frameElement = getFrameElementForDocument(doc);
+          if (!frameElement) {
+            break;
+          }
+          topFrame = frameElement;
+          doc = frameElement.ownerDocument;
+        }
+        return topFrame;
+      }
+
+      function describeElement(element) {
+        if (!element || !element.tagName) return 'unknown';
+        const tag = element.tagName.toLowerCase();
+        const id = element.id ? '#' + element.id : '';
+        const className =
+          element.className && typeof element.className === 'string'
+            ? '.' + element.className.trim().split(/\s+/).filter(Boolean).join('.')
+            : '';
+        return tag + id + className;
+      }
+
+      function deepActiveElement() {
+        let current = document.activeElement;
+        while (current) {
+          if (current.shadowRoot && current.shadowRoot.activeElement) {
+            current = current.shadowRoot.activeElement;
+            continue;
+          }
+          if (current.tagName && current.tagName.toLowerCase() === 'iframe') {
+            try {
+              const frameActive = current.contentDocument && current.contentDocument.activeElement;
+              if (frameActive) {
+                current = frameActive;
+                continue;
+              }
+            } catch {
+              // ignore inaccessible frames
+            }
+          }
+          break;
+        }
+        return current;
+      }
+`;
+
+function buildLocatorRuntimeExpression(
+  inputName: string,
+  inputValue: unknown,
+  body: string,
+): string {
+  return `(async () => {
+${LOCATOR_RUNTIME_HELPERS}
+      const ${inputName} = ${JSON.stringify(inputValue)};
+${body}
+    })()`;
 }
 
 export class ChromeCdpBrowserController implements BrowserController {
@@ -670,6 +1004,143 @@ export class ChromeCdpBrowserController implements BrowserController {
     });
   }
 
+  private async preparePointerTarget(
+    conn: CdpClient,
+    payload: InteractPayload,
+  ): Promise<{ x: number; y: number }> {
+    const expression = buildLocatorRuntimeExpression(
+      "payload",
+      payload,
+      `
+      const resolved = resolveWithFallbacks(payload.selector, payload.fallbackSelectors);
+      const el = resolved.element;
+      ensureInView(el);
+
+      const point = toMainFramePoint(el);
+      if (point.width === 0 && point.height === 0) {
+        throw new Error('Element has zero size - it may be hidden or not rendered');
+      }
+
+      const topEl = document.elementFromPoint(point.x, point.y);
+      const topFrame = getTopFrameElement(el);
+      if (topEl && !isSameComposedTarget(topEl, el) && (!topFrame || topEl !== topFrame)) {
+        throw new Error('Element is covered by another element: ' + describeElement(topEl));
+      }
+
+      return { x: point.x, y: point.y };
+`,
+    );
+
+    const result = await conn.send<{ result: { value?: { x?: number; y?: number } } }>(
+      "Runtime.evaluate",
+      {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      },
+    );
+
+    const point = result.result.value;
+    if (!point || typeof point.x !== "number" || typeof point.y !== "number") {
+      throw new Error("Unable to resolve pointer target");
+    }
+    return { x: point.x, y: point.y };
+  }
+
+  private async prepareTypeTarget(
+    conn: CdpClient,
+    payload: InteractPayload,
+  ): Promise<"ready" | "cleared"> {
+    const expression = buildLocatorRuntimeExpression(
+      "payload",
+      payload,
+      `
+      const resolved = resolveWithFallbacks(payload.selector, payload.fallbackSelectors);
+      const el = resolved.element;
+      ensureInView(el);
+
+      const point = toMainFramePoint(el);
+      if (point.width === 0 && point.height === 0) {
+        throw new Error('Element has zero size - it may be hidden or not rendered');
+      }
+
+      const tag = el.tagName.toLowerCase();
+      const inputType = tag === 'input' ? (el.type || 'text').toLowerCase() : '';
+      const editable =
+        el.isContentEditable ||
+        tag === 'textarea' ||
+        (tag === 'input' &&
+          !['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'hidden'].includes(inputType));
+
+      if (!editable) {
+        throw new Error('Element is not text-editable');
+      }
+
+      if (typeof el.focus === 'function') {
+        el.focus();
+      }
+
+      if ((payload.text ?? '') === '') {
+        if (el.isContentEditable) {
+          el.textContent = '';
+        } else if ('value' in el) {
+          el.value = '';
+        }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return 'cleared';
+      }
+
+      if (el.isContentEditable) {
+        const selection = el.ownerDocument.getSelection ? el.ownerDocument.getSelection() : null;
+        if (selection) {
+          const range = el.ownerDocument.createRange();
+          range.selectNodeContents(el);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      } else if (typeof el.select === 'function') {
+        el.select();
+      }
+
+      return 'ready';
+`,
+    );
+
+    const result = await conn.send<{ result: { value?: "ready" | "cleared" } }>(
+      "Runtime.evaluate",
+      {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      },
+    );
+
+    return result.result.value ?? "ready";
+  }
+
+  private async dispatchMouseClick(conn: CdpClient, x: number, y: number): Promise<void> {
+    await conn.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x,
+      y,
+      button: "none",
+    });
+    await conn.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
+    });
+    await conn.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x,
+      y,
+      button: "left",
+      clickCount: 1,
+    });
+  }
+
   async interact(targetWsUrl: string, payload: InteractPayload): Promise<string> {
     // Navigation actions — handled at CDP level, no in-page JS needed
     if (payload.action === "goBack") {
@@ -741,49 +1212,56 @@ export class ChromeCdpBrowserController implements BrowserController {
       return await this.handleDialogAction(targetWsUrl, payload);
     }
 
-    const p = JSON.stringify(payload);
-    const expression = `(async () => {
-      const payload = ${p};
+    if (payload.action === "click" || payload.action === "hover" || payload.action === "type") {
+      return await this.withRetry(targetWsUrl, async (conn) => {
+        await this.ensureEnabled(targetWsUrl);
 
-      function resolveElement(selector, fallbacks) {
-        let el = selector ? document.querySelector(selector) : null;
-        if (el) return el;
-        if (fallbacks && fallbacks.length) {
-          for (const fb of fallbacks) {
-            el = document.querySelector(fb);
-            if (el) return el;
+        if (payload.action === "click") {
+          const point = await this.preparePointerTarget(conn, payload);
+          await this.dispatchMouseClick(conn, point.x, point.y);
+
+          try {
+            await conn.waitForEvent("Page.frameNavigated", 50);
+            try {
+              await Promise.race([
+                conn.waitForEvent("Page.loadEventFired", 3000),
+                conn.waitForEvent("Page.frameStoppedLoading", 3000),
+              ]);
+            } catch {
+              // load didn't fire in time — page may still be usable
+            }
+          } catch {
+            // No navigation happened – that's fine for non-navigating clicks
           }
-        }
-        throw new Error('Selector not found');
-      }
 
-      if (payload.action === 'click') {
-        const el = resolveElement(payload.selector, payload.fallbackSelectors);
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 && rect.height === 0) {
-          throw new Error('Element has zero size – it may be hidden or not rendered');
+          return "clicked";
         }
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        const topEl = document.elementFromPoint(cx, cy);
-        if (topEl && topEl !== el && !el.contains(topEl) && !topEl.contains(el)) {
-          const tag = topEl.tagName.toLowerCase();
-          const id = topEl.id ? '#' + topEl.id : '';
-          const cls = topEl.className && typeof topEl.className === 'string' ? '.' + topEl.className.split(' ').join('.') : '';
-          throw new Error('Element is covered by another element: ' + tag + id + cls);
+
+        if (payload.action === "hover") {
+          const point = await this.preparePointerTarget(conn, payload);
+          await conn.send("Input.dispatchMouseEvent", {
+            type: "mouseMoved",
+            x: point.x,
+            y: point.y,
+            button: "none",
+          });
+          return "hovered";
         }
-        el.click();
-        return 'clicked';
-      }
-      if (payload.action === 'type') {
-        const el = resolveElement(payload.selector, payload.fallbackSelectors);
-        el.focus();
-        el.value = payload.text ?? '';
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        return 'typed';
-      }
+
+        const preparation = await this.prepareTypeTarget(conn, payload);
+        if (preparation === "ready") {
+          await conn.send("Input.insertText", { text: payload.text ?? "" });
+        }
+        return "typed";
+      });
+    }
+
+    const expression = buildLocatorRuntimeExpression(
+      "payload",
+      payload,
+      `
       if (payload.action === 'press') {
-        const target = document.activeElement;
+        const target = deepActiveElement();
         if (!target) throw new Error('No active element to press key on');
         const key = payload.key ?? 'Enter';
         target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
@@ -794,7 +1272,7 @@ export class ChromeCdpBrowserController implements BrowserController {
         const timeout = payload.timeoutMs ?? 2000;
         const started = Date.now();
         while (Date.now() - started < timeout) {
-          if (document.querySelector(payload.selector)) {
+          if (resolveLocator(payload.selector)) {
             return 'found';
           }
           await new Promise((resolve) => setTimeout(resolve, 100));
@@ -811,25 +1289,15 @@ export class ChromeCdpBrowserController implements BrowserController {
       }
       if (payload.action === 'scroll') {
         if (payload.selector) {
-          const el = resolveElement(payload.selector, payload.fallbackSelectors);
+          const el = resolveWithFallbacks(payload.selector, payload.fallbackSelectors).element;
           el.scrollBy({ left: payload.scrollX ?? 0, top: payload.scrollY ?? 0, behavior: 'smooth' });
           return 'scrolled element';
         }
         window.scrollBy({ left: payload.scrollX ?? 0, top: payload.scrollY ?? 0, behavior: 'smooth' });
         return 'scrolled page';
       }
-      if (payload.action === 'hover') {
-        const el = resolveElement(payload.selector, payload.fallbackSelectors);
-        const rect = el.getBoundingClientRect();
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: cx, clientY: cy }));
-        el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, clientX: cx, clientY: cy }));
-        el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: cx, clientY: cy }));
-        return 'hovered';
-      }
       if (payload.action === 'select') {
-        const el = resolveElement(payload.selector, payload.fallbackSelectors);
+        const el = resolveWithFallbacks(payload.selector, payload.fallbackSelectors).element;
         if (el.tagName.toLowerCase() !== 'select') throw new Error('Element is not a <select>');
         el.value = payload.value ?? '';
         el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -837,13 +1305,14 @@ export class ChromeCdpBrowserController implements BrowserController {
         return 'selected ' + el.value;
       }
       if (payload.action === 'toggle') {
-        const el = resolveElement(payload.selector, payload.fallbackSelectors);
+        const el = resolveWithFallbacks(payload.selector, payload.fallbackSelectors).element;
         el.click();
         const checked = el.checked !== undefined ? el.checked : el.getAttribute('aria-checked') === 'true';
         return 'toggled to ' + (checked ? 'checked' : 'unchecked');
       }
       throw new Error('Unsupported interact action');
-    })()`;
+`,
+    );
 
     return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
@@ -852,54 +1321,35 @@ export class ChromeCdpBrowserController implements BrowserController {
         returnByValue: true,
         awaitPromise: true,
       });
-      const value = result.result.value ?? "";
-
-      // After a click, check briefly if navigation starts (50ms instead of 500ms).
-      // Most clicks don't navigate, so a short timeout avoids penalising the common case.
-      if (payload.action === "click" && value === "clicked") {
-        try {
-          await conn.waitForEvent("Page.frameNavigated", 50);
-          // Navigation started — wait for it to finish loading (up to 3s).
-          try {
-            await Promise.race([
-              conn.waitForEvent("Page.loadEventFired", 3000),
-              conn.waitForEvent("Page.frameStoppedLoading", 3000),
-            ]);
-          } catch {
-            // load didn't fire in time — page may still be usable
-          }
-        } catch {
-          // No navigation happened – that's fine for non-navigating clicks
-        }
-      }
-
-      return value;
+      return result.result.value ?? "";
     });
   }
 
   async getContent(targetWsUrl: string, options: PageContentOptions): Promise<PageContentResult> {
     if (options.mode === "a11y") {
-      const content = await this.getAccessibilityTree(targetWsUrl);
+      const content = await this.getAccessibilityTree(targetWsUrl, options.selector);
       return { mode: "a11y", content };
     }
 
-    const o = JSON.stringify(options);
-    const expression = `(() => {
-      const options = ${o};
+    const expression = buildLocatorRuntimeExpression(
+      "options",
+      options,
+      `
       if (options.mode === 'title') return document.title ?? '';
       if (options.mode === 'html') {
         if (options.selector) {
-          const el = document.querySelector(options.selector);
+          const el = resolveLocator(options.selector);
           return el ? el.outerHTML : '';
         }
         return document.documentElement?.outerHTML ?? '';
       }
       if (options.selector) {
-        const el = document.querySelector(options.selector);
+        const el = resolveLocator(options.selector);
         return el ? el.innerText ?? '' : '';
       }
       return document.body?.innerText ?? '';
-    })()`;
+`,
+    );
 
     return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
@@ -912,95 +1362,127 @@ export class ChromeCdpBrowserController implements BrowserController {
     });
   }
 
-  private async getAccessibilityTree(targetWsUrl: string): Promise<string> {
-    return await this.withRetry(targetWsUrl, async (conn) => {
-      await conn.send("Accessibility.enable");
-
-      const { nodes } = await conn.send<{
-        nodes: Array<{
-          nodeId: string;
-          parentId?: string;
-          role?: { value: string };
-          name?: { value: string };
-          value?: { value: string };
-          description?: { value: string };
-          properties?: Array<{ name: string; value: { value: unknown } }>;
-          childIds?: string[];
-          ignored?: boolean;
-        }>;
-      }>("Accessibility.getFullAXTree");
-
-      // Build parent→children map
-      const childrenMap = new Map<string, string[]>();
-      const nodeMap = new Map<string, (typeof nodes)[0]>();
-      for (const node of nodes) {
-        nodeMap.set(node.nodeId, node);
-        if (node.parentId) {
-          const siblings = childrenMap.get(node.parentId);
-          if (siblings) {
-            siblings.push(node.nodeId);
-          } else {
-            childrenMap.set(node.parentId, [node.nodeId]);
-          }
+  private formatAccessibilityTree(nodes: AccessibilityNode[]): string {
+    const childrenMap = new Map<string, string[]>();
+    const nodeMap = new Map<string, AccessibilityNode>();
+    for (const node of nodes) {
+      nodeMap.set(node.nodeId, node);
+      if (node.parentId) {
+        const siblings = childrenMap.get(node.parentId);
+        if (siblings) {
+          siblings.push(node.nodeId);
+        } else {
+          childrenMap.set(node.parentId, [node.nodeId]);
         }
       }
+    }
 
-      const lines: string[] = [];
+    const lines: string[] = [];
 
-      const formatNode = (nodeId: string, depth: number): void => {
-        const node = nodeMap.get(nodeId);
-        if (!node) return;
+    const formatNode = (nodeId: string, depth: number): void => {
+      const node = nodeMap.get(nodeId);
+      if (!node) return;
 
-        const role = node.role?.value ?? "unknown";
-        const name = node.name?.value ?? "";
-        const value = node.value?.value ?? "";
+      const role = node.role?.value ?? "unknown";
+      const name = node.name?.value ?? "";
+      const value = node.value?.value ?? "";
 
-        // Skip ignored nodes and generic containers with no name
-        if (node.ignored) {
-          // Still traverse children — ignored containers may have visible children
-          const children = childrenMap.get(nodeId) ?? node.childIds ?? [];
-          for (const childId of children) {
-            formatNode(childId, depth);
-          }
-          return;
-        }
-
-        // Skip noise: unnamed generic/group nodes just add indentation
-        const skip =
-          !name && !value && (role === "generic" || role === "none" || role === "GenericContainer");
-        if (!skip) {
-          const indent = "  ".repeat(depth);
-          let line = `${indent}${role}`;
-          if (name) line += ` "${name}"`;
-          if (value) line += ` value="${value}"`;
-
-          // Append key states (checked, expanded, selected, disabled, etc.)
-          if (node.properties) {
-            for (const prop of node.properties) {
-              if (prop.value.value === true) {
-                line += ` [${prop.name}]`;
-              } else if (prop.name === "checked" && prop.value.value === "mixed") {
-                line += ` [indeterminate]`;
-              }
-            }
-          }
-
-          lines.push(line);
-        }
-
+      if (node.ignored) {
         const children = childrenMap.get(nodeId) ?? node.childIds ?? [];
         for (const childId of children) {
-          formatNode(childId, skip ? depth : depth + 1);
+          formatNode(childId, depth);
         }
-      };
-
-      // Find root(s) — nodes without parentId
-      const roots = nodes.filter((n) => !n.parentId);
-      for (const root of roots) {
-        formatNode(root.nodeId, 0);
+        return;
       }
 
-      return lines.join("\n");
+      const skip =
+        !name && !value && (role === "generic" || role === "none" || role === "GenericContainer");
+      if (!skip) {
+        const indent = "  ".repeat(depth);
+        let line = `${indent}${role}`;
+        if (name) line += ` "${name}"`;
+        if (value) line += ` value="${value}"`;
+
+        if (node.properties) {
+          for (const prop of node.properties) {
+            if (prop.value.value === true) {
+              line += ` [${prop.name}]`;
+            } else if (prop.name === "checked" && prop.value.value === "mixed") {
+              line += ` [indeterminate]`;
+            }
+          }
+        }
+
+        lines.push(line);
+      }
+
+      const children = childrenMap.get(nodeId) ?? node.childIds ?? [];
+      for (const childId of children) {
+        formatNode(childId, skip ? depth : depth + 1);
+      }
+    };
+
+    const roots = nodes.filter((node) => !node.parentId || !nodeMap.has(node.parentId));
+    for (const root of roots) {
+      formatNode(root.nodeId, 0);
+    }
+
+    return lines.join("\n");
+  }
+
+  private async getAccessibilityTree(targetWsUrl: string, selector?: string): Promise<string> {
+    return await this.withRetry(targetWsUrl, async (conn) => {
+      await this.ensureEnabled(targetWsUrl);
+      await conn.send("Accessibility.enable");
+
+      let nodes: AccessibilityNode[];
+      if (selector) {
+        const objectGroup = "agentic-browser-a11y";
+        const selected = await conn.send<{ result: { objectId?: string; subtype?: string } }>(
+          "Runtime.evaluate",
+          {
+            expression: buildLocatorRuntimeExpression(
+              "selector",
+              selector,
+              `
+      return resolveLocator(selector);
+`,
+            ),
+            objectGroup,
+          },
+        );
+        const objectId = selected.result.objectId;
+        if (!objectId || selected.result.subtype === "null") {
+          try {
+            await conn.send("Runtime.releaseObjectGroup", { objectGroup });
+          } catch {
+            // ignore cleanup failures
+          }
+          return "";
+        }
+
+        try {
+          const partial = await conn.send<{ nodes: AccessibilityNode[] }>(
+            "Accessibility.getPartialAXTree",
+            {
+              objectId,
+              fetchRelatives: false,
+            },
+          );
+          nodes = partial.nodes;
+        } finally {
+          try {
+            await conn.send("Runtime.releaseObjectGroup", { objectGroup });
+          } catch {
+            // ignore cleanup failures
+          }
+        }
+      } else {
+        const full = await conn.send<{ nodes: AccessibilityNode[] }>("Accessibility.getFullAXTree");
+        nodes = full.nodes;
+      }
+
+      return this.formatAccessibilityTree(nodes);
     });
   }
 
@@ -1008,19 +1490,15 @@ export class ChromeCdpBrowserController implements BrowserController {
     targetWsUrl: string,
     options: InteractiveElementsOptions,
   ): Promise<InteractiveElementsResult> {
-    const o = JSON.stringify(options);
-    const expression = `(() => {
-      const options = ${o};
+    const expression = buildLocatorRuntimeExpression(
+      "options",
+      options,
+      `
       const visibleOnly = options.visibleOnly !== false;
       const limit = options.limit ?? 50;
       const scopeSelector = options.selector;
       const roleFilter = options.roles ? new Set(options.roles) : null;
-
-      const root = scopeSelector
-        ? document.querySelector(scopeSelector) ?? document.body
-        : document.body;
-
-      const candidates = root.querySelectorAll([
+      const candidateSelector = [
         'a[href]',
         'button',
         'input:not([type="hidden"])',
@@ -1036,43 +1514,15 @@ export class ChromeCdpBrowserController implements BrowserController {
         '[onclick]',
         '[tabindex]',
         '[contenteditable="true"]',
-        '[contenteditable=""]',
-      ].join(','));
+        '[contenteditable=""]'
+      ].join(',');
 
-      const seen = new Set();
-
-      function classifyRole(el) {
-        const tag = el.tagName.toLowerCase();
-        const ariaRole = el.getAttribute('role');
-        if (tag === 'a') return 'link';
-        if (tag === 'button' || ariaRole === 'button') return 'button';
-        if (tag === 'input') {
-          const t = (el.type || 'text').toLowerCase();
-          if (t === 'checkbox') return 'checkbox';
-          if (t === 'radio') return 'radio';
-          return 'input';
-        }
-        if (tag === 'select') return 'select';
-        if (tag === 'textarea') return 'textarea';
-        if (el.isContentEditable) return 'contenteditable';
-        if (ariaRole === 'link') return 'link';
-        if (ariaRole === 'checkbox' || ariaRole === 'switch') return 'checkbox';
-        if (ariaRole === 'radio') return 'radio';
-        return 'custom';
-      }
-
-      function getActions(role, el) {
-        switch (role) {
-          case 'link': case 'button': case 'custom': return ['click'];
-          case 'input': {
-            const t = (el.type || 'text').toLowerCase();
-            if (t === 'submit' || t === 'reset' || t === 'button' || t === 'file') return ['click'];
-            return ['click', 'type', 'press'];
-          }
-          case 'textarea': case 'contenteditable': return ['click', 'type', 'press'];
-          case 'select': return ['click', 'select'];
-          case 'checkbox': case 'radio': return ['click', 'toggle'];
-          default: return ['click'];
+      let scopeElement = null;
+      if (scopeSelector) {
+        try {
+          scopeElement = resolveLocator(scopeSelector) ?? document.body;
+        } catch {
+          scopeElement = document.body;
         }
       }
 
@@ -1080,79 +1530,90 @@ export class ChromeCdpBrowserController implements BrowserController {
         return value.replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
       }
 
-      function tryUniqueSelector(sel) {
-        try { return document.querySelectorAll(sel).length === 1 ? sel : null; }
-        catch { return null; }
+      function composeLocator(path, selector) {
+        if (!path.length) return selector;
+        return path.join(LOCATOR_SEPARATOR) + LOCATOR_SEPARATOR + selector;
       }
 
-      function buildSelector(el) {
+      function tryUniqueSelector(root, selector) {
+        try {
+          return root.querySelectorAll(selector).length === 1 ? selector : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function buildSelector(root, el) {
         if (el.id) return '#' + CSS.escape(el.id);
 
         const name = el.getAttribute('name');
         if (name) {
           const tag = el.tagName.toLowerCase();
-          const sel = tryUniqueSelector(tag + '[name="' + escapeAttr(name) + '"]');
-          if (sel) return sel;
+          const selector = tryUniqueSelector(root, tag + '[name="' + escapeAttr(name) + '"]');
+          if (selector) return selector;
         }
 
         const testId = el.getAttribute('data-testid') || el.getAttribute('data-test-id');
         if (testId) {
           const attr = el.hasAttribute('data-testid') ? 'data-testid' : 'data-test-id';
-          const sel = tryUniqueSelector('[' + attr + '="' + escapeAttr(testId) + '"]');
-          if (sel) return sel;
+          const selector = tryUniqueSelector(root, '[' + attr + '="' + escapeAttr(testId) + '"]');
+          if (selector) return selector;
         }
 
         const ariaLabel = el.getAttribute('aria-label');
         if (ariaLabel) {
           const tag = el.tagName.toLowerCase();
-          const sel = tryUniqueSelector(tag + '[aria-label="' + escapeAttr(ariaLabel) + '"]');
-          if (sel) return sel;
+          const selector = tryUniqueSelector(root, tag + '[aria-label="' + escapeAttr(ariaLabel) + '"]');
+          if (selector) return selector;
         }
 
         const dataCy = el.getAttribute('data-cy');
         if (dataCy) {
-          const sel = tryUniqueSelector('[data-cy="' + escapeAttr(dataCy) + '"]');
-          if (sel) return sel;
+          const selector = tryUniqueSelector(root, '[data-cy="' + escapeAttr(dataCy) + '"]');
+          if (selector) return selector;
         }
 
         const dataTest = el.getAttribute('data-test');
         if (dataTest) {
-          const sel = tryUniqueSelector('[data-test="' + escapeAttr(dataTest) + '"]');
-          if (sel) return sel;
+          const selector = tryUniqueSelector(root, '[data-test="' + escapeAttr(dataTest) + '"]');
+          if (selector) return selector;
         }
 
         const role = el.getAttribute('role');
         if (role && ariaLabel) {
-          const sel = tryUniqueSelector('[role="' + escapeAttr(role) + '"][aria-label="' + escapeAttr(ariaLabel) + '"]');
-          if (sel) return sel;
+          const selector = tryUniqueSelector(
+            root,
+            '[role="' + escapeAttr(role) + '"][aria-label="' + escapeAttr(ariaLabel) + '"]'
+          );
+          if (selector) return selector;
         }
 
-        // Path fallback — anchor at nearest ancestor with an id for shorter selectors
         const parts = [];
         let current = el;
-        while (current && current !== document.documentElement) {
+        while (current && current.nodeType === 1) {
           const tag = current.tagName.toLowerCase();
           if (current !== el && current.id) {
             parts.unshift('#' + CSS.escape(current.id));
             break;
           }
           const parent = current.parentElement;
-          if (!parent) { parts.unshift(tag); break; }
-          const siblings = Array.from(parent.children).filter(
-            c => c.tagName === current.tagName
-          );
+          if (!parent) {
+            parts.unshift(tag);
+            break;
+          }
+          const siblings = Array.from(parent.children).filter((candidate) => candidate.tagName === current.tagName);
           if (siblings.length === 1) {
             parts.unshift(tag);
           } else {
-            const idx = siblings.indexOf(current) + 1;
-            parts.unshift(tag + ':nth-of-type(' + idx + ')');
+            const index = siblings.indexOf(current) + 1;
+            parts.unshift(tag + ':nth-of-type(' + index + ')');
           }
           current = parent;
         }
         return parts.join(' > ');
       }
 
-      function buildFallbackSelectors(el, primarySelector) {
+      function buildFallbackSelectors(root, path, el, primarySelector) {
         const fallbacks = [];
         const candidates = [];
 
@@ -1161,8 +1622,7 @@ export class ChromeCdpBrowserController implements BrowserController {
         const name = el.getAttribute('name');
         if (name) {
           const tag = el.tagName.toLowerCase();
-          const sel = tag + '[name="' + escapeAttr(name) + '"]';
-          candidates.push(sel);
+          candidates.push(tag + '[name="' + escapeAttr(name) + '"]');
         }
 
         const testId = el.getAttribute('data-testid') || el.getAttribute('data-test-id');
@@ -1188,16 +1648,68 @@ export class ChromeCdpBrowserController implements BrowserController {
           candidates.push('[role="' + escapeAttr(role) + '"][aria-label="' + escapeAttr(ariaLabel) + '"]');
         }
 
-        for (const sel of candidates) {
-          if (sel === primarySelector) continue;
-          if (tryUniqueSelector(sel)) fallbacks.push(sel);
+        for (const candidate of candidates) {
+          if (!tryUniqueSelector(root, candidate)) continue;
+          const locator = composeLocator(path, candidate);
+          if (locator === primarySelector) continue;
+          fallbacks.push(locator);
           if (fallbacks.length >= 3) break;
         }
         return fallbacks;
       }
 
+      function classifyRole(el) {
+        const tag = el.tagName.toLowerCase();
+        const ariaRole = el.getAttribute('role');
+        if (tag === 'a') return 'link';
+        if (tag === 'button' || ariaRole === 'button') return 'button';
+        if (tag === 'input') {
+          const type = (el.type || 'text').toLowerCase();
+          if (type === 'checkbox') return 'checkbox';
+          if (type === 'radio') return 'radio';
+          return 'input';
+        }
+        if (tag === 'select') return 'select';
+        if (tag === 'textarea') return 'textarea';
+        if (el.isContentEditable) return 'contenteditable';
+        if (ariaRole === 'link') return 'link';
+        if (ariaRole === 'checkbox' || ariaRole === 'switch') return 'checkbox';
+        if (ariaRole === 'radio') return 'radio';
+        return 'custom';
+      }
+
+      function getActions(role, el) {
+        switch (role) {
+          case 'link':
+          case 'button':
+          case 'custom':
+            return ['click'];
+          case 'input': {
+            const type = (el.type || 'text').toLowerCase();
+            if (type === 'submit' || type === 'reset' || type === 'button' || type === 'file') {
+              return ['click'];
+            }
+            return ['click', 'type', 'press'];
+          }
+          case 'textarea':
+          case 'contenteditable':
+            return ['click', 'type', 'press'];
+          case 'select':
+            return ['click', 'select'];
+          case 'checkbox':
+          case 'radio':
+            return ['click', 'toggle'];
+          default:
+            return ['click'];
+        }
+      }
+
+      function viewForElement(el) {
+        return el.ownerDocument && el.ownerDocument.defaultView ? el.ownerDocument.defaultView : window;
+      }
+
       function isVisible(el) {
-        const style = window.getComputedStyle(el);
+        const style = viewForElement(el).getComputedStyle(el);
         if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
           return false;
         }
@@ -1211,16 +1723,16 @@ export class ChromeCdpBrowserController implements BrowserController {
 
         const tag = el.tagName.toLowerCase();
         if (tag === 'input') {
-          const v = el.value;
-          if (v) return v.slice(0, 80);
-          const ph = el.getAttribute('placeholder');
-          if (ph) return ph.slice(0, 80);
+          const value = el.value;
+          if (value) return value.slice(0, 80);
+          const placeholder = el.getAttribute('placeholder');
+          if (placeholder) return placeholder.slice(0, 80);
           return el.type || 'text';
         }
 
         const directText = Array.from(el.childNodes)
-          .filter(n => n.nodeType === 3)
-          .map(n => n.textContent.trim())
+          .filter((node) => node.nodeType === 3)
+          .map((node) => node.textContent.trim())
           .filter(Boolean)
           .join(' ');
         if (directText) return directText.slice(0, 80);
@@ -1243,48 +1755,96 @@ export class ChromeCdpBrowserController implements BrowserController {
         return ariaDisabled !== 'true';
       }
 
+      function rootEntries(root) {
+        if (!root) return [];
+        if (root.nodeType === Node.DOCUMENT_NODE) {
+          if (root.body) return [root.body];
+          if (root.documentElement) return [root.documentElement];
+          return [];
+        }
+        if (root.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+          return Array.from(root.children || []);
+        }
+        return [root];
+      }
+
       const results = [];
       let totalFound = 0;
 
-      for (const el of candidates) {
-        if (seen.has(el)) continue;
-        seen.add(el);
+      function maybeRecordElement(root, path, el) {
+        if (scopeElement && !isWithinComposedSubtree(scopeElement, el)) {
+          return;
+        }
+
+        if (!el.matches(candidateSelector)) {
+          return;
+        }
 
         const role = classifyRole(el);
-        if (roleFilter && !roleFilter.has(role)) continue;
+        if (roleFilter && !roleFilter.has(role)) return;
 
-        const vis = isVisible(el);
-        if (visibleOnly && !vis) continue;
+        const visible = isVisible(el);
+        if (visibleOnly && !visible) return;
 
-        totalFound++;
-        if (results.length >= limit) continue;
+        totalFound += 1;
+        if (results.length >= limit) return;
 
-        const primarySelector = buildSelector(el);
+        const selector = composeLocator(path, buildSelector(root, el));
         const entry = {
-          selector: primarySelector,
+          selector,
           role,
           tagName: el.tagName.toLowerCase(),
           text: getText(el),
           actions: getActions(role, el),
-          visible: vis,
+          visible,
           enabled: isEnabled(el),
         };
 
-        const fb = buildFallbackSelectors(el, primarySelector);
-        if (fb.length) entry.fallbackSelectors = fb;
+        const fallbacks = buildFallbackSelectors(root, path, el, selector);
+        if (fallbacks.length) entry.fallbackSelectors = fallbacks;
 
         if (role === 'link' && el.href) entry.href = el.href;
         if (role === 'input') entry.inputType = (el.type || 'text').toLowerCase();
-        const al = el.getAttribute('aria-label');
-        if (al) entry.ariaLabel = al;
-        const ph = el.getAttribute('placeholder');
-        if (ph) entry.placeholder = ph;
+        const ariaLabel = el.getAttribute('aria-label');
+        if (ariaLabel) entry.ariaLabel = ariaLabel;
+        const placeholder = el.getAttribute('placeholder');
+        if (placeholder) entry.placeholder = placeholder;
 
         results.push(entry);
       }
 
+      function walkRoot(root, path) {
+        const queue = rootEntries(root).slice();
+        while (queue.length) {
+          const current = queue.shift();
+          if (!current || current.nodeType !== 1) continue;
+
+          maybeRecordElement(root, path, current);
+
+          if (current.shadowRoot) {
+            walkRoot(current.shadowRoot, path.concat(buildSelector(root, current)));
+          }
+
+          if (current.tagName && current.tagName.toLowerCase() === 'iframe') {
+            try {
+              if (current.contentDocument) {
+                walkRoot(current.contentDocument, path.concat(buildSelector(root, current)));
+              }
+            } catch {
+              // ignore inaccessible frames
+            }
+          }
+
+          for (const child of Array.from(current.children)) {
+            queue.push(child);
+          }
+        }
+      }
+
+      walkRoot(document, []);
       return { elements: results, totalFound, truncated: totalFound > results.length };
-    })()`;
+`,
+    );
 
     const emptyResult: InteractiveElementsResult = {
       elements: [],
