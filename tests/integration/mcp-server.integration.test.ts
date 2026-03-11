@@ -14,7 +14,7 @@ describe("mcp server tool handlers", () => {
   function createCore() {
     return createMockAgenticBrowserCore({
       ...process.env,
-      AGENTIC_BROWSER_LOG_DIR: `/tmp/agentic-browser-mcp-${Math.random().toString(16).slice(2)}`,
+      AGENTIC_BROWSER_DIR: `/tmp/agentic-browser-mcp-${Math.random().toString(16).slice(2)}`,
     });
   }
 

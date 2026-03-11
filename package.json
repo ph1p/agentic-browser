@@ -53,10 +53,10 @@
     "@semantic-release/github": "^12.0.6",
     "@semantic-release/npm": "^13.1.5",
     "@semantic-release/release-notes-generator": "^14.1.0",
-    "@types/node": "^25.3.5",
+    "@types/node": "^25.4.0",
     "@types/ws": "^8.18.1",
-    "oxfmt": "^0.36.0",
-    "oxlint": "^1.51.0",
+    "oxfmt": "^0.37.0",
+    "oxlint": "^1.52.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "semantic-release": "^25.0.3",
@@ -65,5 +65,5 @@
     "vitest": "^4.0.18",
     "vocs": "1.4.1"
   },
-  "packageManager": "pnpm@10.31.0"
+  "packageManager": "pnpm@10.32.0"
 }

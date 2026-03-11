@@ -13,7 +13,7 @@ interface AgentState {
 }
 
 function stateFilePath(runtime: Runtime): string {
-  return path.join(runtime.context.config.logDir, STATE_FILE_NAME);
+  return path.join(runtime.context.config.dataDir, STATE_FILE_NAME);
 }
 
 function loadState(runtime: Runtime): AgentState {

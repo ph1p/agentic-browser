@@ -17,14 +17,14 @@ export interface AppContext {
 export function createAppContext(env: NodeJS.ProcessEnv = process.env): AppContext {
   const config = loadConfig(env);
   const logger = new Logger("app");
-  const eventStore = new EventStore(config.logDir);
+  const eventStore = new EventStore(config.dataDir);
   const tokenService = new SessionTokenService();
   const wsServer = new AuthenticatedWsServer({
     host: config.host,
     port: config.wsPort,
     tokenService,
   });
-  const memoryService = new MemoryService(config.logDir);
+  const memoryService = new MemoryService(config.dataDir);
 
   return { config, logger, eventStore, tokenService, wsServer, memoryService };
 }

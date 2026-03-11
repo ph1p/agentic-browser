@@ -1,12 +1,20 @@
 import crypto from "node:crypto";
 
 import { MemoryIndex } from "./memory-index.js";
-import { applyFailure, applySuccess, detectStalenessSignal } from "./staleness-detector.js";
+import {
+  applyAgeStaleness,
+  applyFailure,
+  applySuccess,
+  detectStalenessSignal,
+} from "./staleness-detector.js";
+import { SiteProfileStore } from "./site-profile-store.js";
 import { TaskInsightStore } from "./task-insight-store.js";
 import type {
   EvidenceRecord,
   MemorySearchResult,
+  PageLayoutFingerprint,
   SelectorAlias,
+  SiteProfile,
   TaskInsight,
   TaskStep,
 } from "./memory-schemas.js";
@@ -29,9 +37,13 @@ export interface RecordExecutionInput {
 }
 
 const SEARCH_CACHE_TTL_MS = 2000;
+const MAX_NAVIGATION_PATHS = 20;
+const MAX_LAYOUT_FINGERPRINTS = 10;
+const MAX_SELECTOR_PATTERNS = 15;
 
 export class MemoryService {
   private readonly store: TaskInsightStore;
+  private readonly profileStore: SiteProfileStore;
   private readonly index: MemoryIndex;
 
   /** Simple TTL cache for search results keyed by intent+domain+limit. */
@@ -39,12 +51,14 @@ export class MemoryService {
 
   constructor(baseDir: string) {
     this.store = new TaskInsightStore(baseDir);
+    this.profileStore = new SiteProfileStore(baseDir);
     this.index = new MemoryIndex();
   }
 
   /** Force an immediate synchronous flush of pending writes. */
   flushSync(): void {
     this.store.flushSync();
+    this.profileStore.flushSync();
   }
 
   search(input: MemorySearchInput): MemorySearchResult[] {
@@ -54,7 +68,21 @@ export class MemoryService {
     if (cached && now - cached.ts < SEARCH_CACHE_TTL_MS) {
       return cached.results;
     }
-    const results = this.index.search(this.store.list(), input);
+
+    // Lazy age-based staleness decay
+    const insights = this.store.list();
+    let mutated = false;
+    for (let i = 0; i < insights.length; i++) {
+      const decayed = applyAgeStaleness(insights[i]!);
+      if (decayed.freshness !== insights[i]!.freshness) {
+        insights[i] = decayed;
+        this.store.upsert(decayed);
+        mutated = true;
+      }
+    }
+    if (mutated) this.searchCache.clear();
+
+    const results = this.index.search(insights, input, (domain) => this.profileStore.get(domain));
     this.searchCache.set(cacheKey, { results, ts: now });
     return results;
   }
@@ -112,6 +140,8 @@ export class MemoryService {
   }
 
   recordSuccess(input: RecordExecutionInput): TaskInsight {
+    this.updateSiteProfile(input.siteDomain, input.selector, input.url, input.sitePathPattern);
+
     const insights = this.store.list();
     const matched = this.findBestExactMatch(insights, input);
     const evidence = this.createEvidence(input, "success");
@@ -174,6 +204,8 @@ export class MemoryService {
   }
 
   recordFailure(input: RecordExecutionInput, errorMessage: string): TaskInsight | undefined {
+    this.updateSiteProfile(input.siteDomain, input.selector, input.url, input.sitePathPattern);
+
     const insights = this.store.list();
     const matched = this.findBestExactMatch(insights, input);
     if (!matched) {
@@ -195,6 +227,128 @@ export class MemoryService {
     this.store.upsert(failed);
     this.invalidateSearchCache();
     return failed;
+  }
+
+  /** Update site profile from page content (call after getContent with mode="summary"). */
+  updateProfileFromContent(
+    domain: string,
+    pathPattern: string,
+    structuredContent: { headings?: string[]; landmarks?: string[] },
+  ): void {
+    if (!domain || domain === "unknown") return;
+    const normalized = domain.toLowerCase();
+    const now = new Date().toISOString();
+    const profile = this.profileStore.get(normalized) ?? this.createEmptyProfile(normalized, now);
+
+    const fingerprint: PageLayoutFingerprint = {
+      pathPattern,
+      headings: (structuredContent.headings ?? []).slice(0, 8),
+      landmarks: (structuredContent.landmarks ?? []).slice(0, 8),
+      lastSeenAt: now,
+    };
+
+    const fpIndex = profile.layoutFingerprints.findIndex((fp) => fp.pathPattern === pathPattern);
+    if (fpIndex >= 0) {
+      profile.layoutFingerprints[fpIndex] = fingerprint;
+    } else {
+      profile.layoutFingerprints.push(fingerprint);
+      if (profile.layoutFingerprints.length > MAX_LAYOUT_FINGERPRINTS) {
+        profile.layoutFingerprints = profile.layoutFingerprints
+          .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))
+          .slice(0, MAX_LAYOUT_FINGERPRINTS);
+      }
+    }
+
+    profile.lastVisitAt = now;
+    this.profileStore.upsert(profile);
+  }
+
+  /** Update site profile with cookie banner behavior. */
+  updateProfileCookieBanner(
+    domain: string,
+    result: { dismissed: boolean; method?: string; detail?: string },
+  ): void {
+    if (!domain || domain === "unknown") return;
+    const normalized = domain.toLowerCase();
+    const now = new Date().toISOString();
+    const profile = this.profileStore.get(normalized) ?? this.createEmptyProfile(normalized, now);
+
+    profile.cookieBanner = {
+      detected: true,
+      autoDismissed: result.dismissed,
+      method: result.method,
+    };
+    profile.lastVisitAt = now;
+    this.profileStore.upsert(profile);
+  }
+
+  /** Look up a site profile by domain. */
+  getSiteProfile(domain: string): SiteProfile | undefined {
+    return this.profileStore.get(domain);
+  }
+
+  // ── private ──────────────────────────────────────────────────────
+
+  private updateSiteProfile(
+    domain: string,
+    selector?: string,
+    url?: string,
+    pathPattern?: string,
+  ): void {
+    if (!domain || domain === "unknown") return;
+    const normalized = domain.toLowerCase();
+    const now = new Date().toISOString();
+    const profile = this.profileStore.get(normalized) ?? this.createEmptyProfile(normalized, now);
+
+    profile.visitCount += 1;
+    profile.lastVisitAt = now;
+
+    if (selector) {
+      const pattern = this.classifySelectorPattern(selector);
+      if (pattern) {
+        const existing = profile.selectorPatterns.find((p) => p.pattern === pattern);
+        if (existing) {
+          existing.frequency += 1;
+          existing.lastSeenAt = now;
+        } else if (profile.selectorPatterns.length < MAX_SELECTOR_PATTERNS) {
+          profile.selectorPatterns.push({ pattern, frequency: 1, lastSeenAt: now });
+        }
+      }
+    }
+
+    if (pathPattern && pathPattern !== "/") {
+      if (
+        !profile.navigationPaths.includes(pathPattern) &&
+        profile.navigationPaths.length < MAX_NAVIGATION_PATHS
+      ) {
+        profile.navigationPaths.push(pathPattern);
+      }
+    }
+
+    this.profileStore.upsert(profile);
+  }
+
+  private createEmptyProfile(domain: string, now: string): SiteProfile {
+    return {
+      domain,
+      selectorPatterns: [],
+      layoutFingerprints: [],
+      navigationPaths: [],
+      visitCount: 0,
+      lastVisitAt: now,
+      createdAt: now,
+    };
+  }
+
+  private classifySelectorPattern(selector: string): string | undefined {
+    if (selector.includes("[data-testid=")) return "data-testid";
+    if (selector.includes("[data-cy=")) return "data-cy";
+    if (selector.includes("[data-test=")) return "data-test";
+    if (selector.includes("[aria-label=")) return "aria-label";
+    if (selector.includes("[name=")) return "name-attribute";
+    if (/^#[\w-]+$/.test(selector)) return "id-selector";
+    if (selector.includes("[role=")) return "role-attribute";
+    return undefined;
   }
 
   private findBestExactMatch(

@@ -8,7 +8,7 @@ import { MockBrowserController } from "../../src/session/browser-controller.js";
 function createApi() {
   const context = createAppContext({
     ...process.env,
-    AGENTIC_BROWSER_LOG_DIR: `/tmp/agentic-browser-contract-${Math.random().toString(16).slice(2)}`,
+    AGENTIC_BROWSER_DIR: `/tmp/agentic-browser-contract-${Math.random().toString(16).slice(2)}`,
   });
   const sessionManager = new SessionManager(context, new MockBrowserController());
   return new ControlApi(sessionManager, context.eventStore);

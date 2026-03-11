@@ -6,7 +6,7 @@ describe("programmatic core integration", () => {
   it("supports session lifecycle and memory retrieval without CLI wrappers", async () => {
     const core = createMockAgenticBrowserCore({
       ...process.env,
-      AGENTIC_BROWSER_LOG_DIR: `/tmp/agentic-browser-core-${Math.random().toString(16).slice(2)}`,
+      AGENTIC_BROWSER_DIR: `/tmp/agentic-browser-core-${Math.random().toString(16).slice(2)}`,
     });
 
     const session = await core.startSession();
@@ -32,7 +32,7 @@ describe("programmatic core integration", () => {
   it("returns interactive elements from a session", async () => {
     const core = createMockAgenticBrowserCore({
       ...process.env,
-      AGENTIC_BROWSER_LOG_DIR: `/tmp/agentic-browser-core-${Math.random().toString(16).slice(2)}`,
+      AGENTIC_BROWSER_DIR: `/tmp/agentic-browser-core-${Math.random().toString(16).slice(2)}`,
     });
 
     const session = await core.startSession();

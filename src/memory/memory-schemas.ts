@@ -50,12 +50,57 @@ export const MemoryStateSchema = z.object({
   insights: z.array(TaskInsightSchema),
 });
 
+export const SelectorPatternSchema = z.object({
+  pattern: z.string().min(1),
+  frequency: z.number().int().nonnegative(),
+  lastSeenAt: z.string().datetime(),
+});
+
+export const PageLayoutFingerprintSchema = z.object({
+  pathPattern: z.string().min(1),
+  headings: z.array(z.string()).default([]),
+  landmarks: z.array(z.string()).default([]),
+  lastSeenAt: z.string().datetime(),
+});
+
+export const SiteProfileSchema = z.object({
+  domain: z.string().min(1),
+  selectorPatterns: z.array(SelectorPatternSchema).default([]),
+  layoutFingerprints: z.array(PageLayoutFingerprintSchema).default([]),
+  navigationPaths: z.array(z.string()).default([]),
+  cookieBanner: z
+    .object({
+      detected: z.boolean(),
+      autoDismissed: z.boolean().optional(),
+      method: z.string().optional(),
+    })
+    .optional(),
+  visitCount: z.number().int().nonnegative().default(0),
+  lastVisitAt: z.string().datetime(),
+  createdAt: z.string().datetime(),
+});
+
+export const SiteProfileStateSchema = z.object({
+  profiles: z.array(SiteProfileSchema),
+});
+
 export type InsightFreshness = z.infer<typeof InsightFreshnessSchema>;
 export type TaskStep = z.infer<typeof TaskStepSchema>;
 export type EvidenceRecord = z.infer<typeof EvidenceRecordSchema>;
 export type SelectorAlias = z.infer<typeof SelectorAliasSchema>;
 export type TaskInsight = z.infer<typeof TaskInsightSchema>;
 export type MemoryState = z.infer<typeof MemoryStateSchema>;
+export type SelectorPattern = z.infer<typeof SelectorPatternSchema>;
+export type PageLayoutFingerprint = z.infer<typeof PageLayoutFingerprintSchema>;
+export type SiteProfile = z.infer<typeof SiteProfileSchema>;
+export type SiteProfileState = z.infer<typeof SiteProfileStateSchema>;
+
+export interface SiteProfileSummary {
+  selectorPatterns: SelectorPattern[];
+  layoutFingerprints: PageLayoutFingerprint[];
+  cookieBanner?: { detected: boolean; autoDismissed?: boolean; method?: string };
+  visitCount: number;
+}
 
 export interface MemorySearchResult {
   insightId: string;
@@ -67,4 +112,5 @@ export interface MemorySearchResult {
   selectorHints: string[];
   selectorAliases: SelectorAlias[];
   score: number;
+  siteProfile?: SiteProfileSummary;
 }

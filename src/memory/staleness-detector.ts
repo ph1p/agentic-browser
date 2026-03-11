@@ -49,6 +49,23 @@ export function applyFailure(insight: TaskInsight, signal: StalenessSignal): Tas
   };
 }
 
+export const FRESH_MAX_AGE_DAYS = 30;
+export const SUSPECT_MAX_AGE_DAYS = 14;
+
+export function applyAgeStaleness(insight: TaskInsight): TaskInsight {
+  const now = Date.now();
+  const lastVerified = Date.parse(insight.lastVerifiedAt);
+  const ageDays = (now - lastVerified) / (24 * 60 * 60 * 1000);
+
+  if (insight.freshness === "fresh" && ageDays > FRESH_MAX_AGE_DAYS) {
+    return { ...insight, freshness: "suspect", updatedAt: new Date().toISOString() };
+  }
+  if (insight.freshness === "suspect" && ageDays > FRESH_MAX_AGE_DAYS + SUSPECT_MAX_AGE_DAYS) {
+    return { ...insight, freshness: "stale", updatedAt: new Date().toISOString() };
+  }
+  return insight;
+}
+
 export function applySuccess(insight: TaskInsight): TaskInsight {
   const now = new Date().toISOString();
   const successCount = insight.successCount + 1;

@@ -267,7 +267,7 @@ agentic-browser memory:stats
 ## Important Notes for LLMs
 
 - Exactly **one** managed session is supported at a time.
-- Session state is persisted in `.agentic-browser/`.
+- Session state is persisted in `~/.agentic-browser/` (override with `AGENTIC_BROWSER_DIR`).
 - All commands print exactly one JSON line to `stdout`.
 - The typed `agent` commands are the preferred interface for LLMs. Use low-level `command:run` only when you need raw JSON payload control.
 - Parse only `stdout` as result object and use exit code for success/failure.

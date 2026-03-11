@@ -26,10 +26,14 @@ export function discoverChrome(explicitPath?: string): string {
   return found;
 }
 
-export function launchChrome(executablePath: string, sessionId: string): ChromeLaunchResult {
+export function launchChrome(
+  executablePath: string,
+  sessionId: string,
+  baseDir: string,
+): ChromeLaunchResult {
   return {
     executablePath,
-    profileDir: path.resolve(process.cwd(), ".agentic-browser", `profile-${sessionId}`),
+    profileDir: path.join(baseDir, `profile-${sessionId}`),
     debugPort: 9222,
   };
 }

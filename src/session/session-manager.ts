@@ -50,7 +50,7 @@ export class SessionManager {
     private readonly ctx: AppContext,
     private readonly browser: BrowserController,
   ) {
-    this.store = new SessionStore(this.ctx.config.logDir);
+    this.store = new SessionStore(this.ctx.config.dataDir);
   }
 
   async createSession(input: CreateSessionInput): Promise<Session> {
@@ -245,7 +245,29 @@ export class SessionManager {
 
   async getContent(sessionId: string, options: PageContentOptions) {
     const record = await this.ensureSession(sessionId);
-    return await this.browser.getContent(record.targetWsUrl, options);
+    const result = await this.browser.getContent(record.targetWsUrl, options);
+
+    if (options.mode === "summary" && result.structuredContent) {
+      const sc = result.structuredContent as {
+        url?: string;
+        headings?: Array<{ text?: string } | string>;
+        landmarks?: Array<{ role?: string } | string>;
+      };
+      const url = typeof sc.url === "string" ? sc.url : record.lastUrl;
+      const parsed = this.parseUrl(url);
+      const headingTexts = (sc.headings ?? []).map((h) =>
+        typeof h === "string" ? h : (h.text ?? ""),
+      );
+      const landmarkTexts = (sc.landmarks ?? []).map((l) =>
+        typeof l === "string" ? l : (l.role ?? ""),
+      );
+      this.ctx.memoryService.updateProfileFromContent(parsed.domain, parsed.pathPattern, {
+        headings: headingTexts,
+        landmarks: landmarkTexts,
+      });
+    }
+
+    return result;
   }
 
   async getInteractiveElements(sessionId: string, options: InteractiveElementsOptions) {
@@ -255,7 +277,12 @@ export class SessionManager {
 
   async dismissCookieBanner(sessionId: string): Promise<DismissCookieBannerResult> {
     const record = await this.ensureSession(sessionId);
-    return await this.browser.dismissCookieBanner(record.targetWsUrl);
+    const result = await this.browser.dismissCookieBanner(record.targetWsUrl);
+
+    const parsed = this.parseUrl(record.lastUrl);
+    this.ctx.memoryService.updateProfileCookieBanner(parsed.domain, result);
+
+    return result;
   }
 
   setStatus(status: SessionStatus, reason: string): Session {
@@ -426,7 +453,7 @@ export class SessionManager {
     }
 
     const keepIds = new Set(keep.map((record) => record.session.sessionId));
-    const profilesDir = path.join(this.ctx.config.logDir, "profiles");
+    const profilesDir = path.join(this.ctx.config.dataDir, "profiles");
     const removedProfileDirs: string[] = [];
 
     if (fs.existsSync(profilesDir)) {

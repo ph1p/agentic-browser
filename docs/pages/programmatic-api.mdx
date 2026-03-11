@@ -278,7 +278,7 @@ describe("my automation", () => {
   it("navigates and reads content", async () => {
     const core = createMockAgenticBrowserCore({
       ...process.env,
-      AGENTIC_BROWSER_LOG_DIR: `/tmp/test-${Math.random().toString(16).slice(2)}`,
+      AGENTIC_BROWSER_DIR: `/tmp/test-${Math.random().toString(16).slice(2)}`,
     });
 
     const session = await core.startSession();

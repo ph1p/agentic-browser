@@ -1,4 +1,9 @@
-import type { MemorySearchResult, SelectorAlias, TaskInsight } from "./memory-schemas.js";
+import type {
+  MemorySearchResult,
+  SelectorAlias,
+  SiteProfile,
+  TaskInsight,
+} from "./memory-schemas.js";
 
 interface SearchInput {
   taskIntent: string;
@@ -62,6 +67,7 @@ function scoreInsight(
   insight: TaskInsight,
   normalizedIntent: string,
   normalizedDomain: string | undefined,
+  profileLookup?: (domain: string) => SiteProfile | undefined,
 ): MemorySearchResult {
   const insightIntent = normalize(insight.taskIntent);
   const intentMatch = insightIntent === normalizedIntent ? 1 : 0;
@@ -88,7 +94,7 @@ function scoreInsight(
     0.15 * reliability +
     0.15 * selectorQuality;
 
-  return {
+  const result: MemorySearchResult = {
     insightId: insight.insightId,
     taskIntent: insight.taskIntent,
     siteDomain: insight.siteDomain,
@@ -98,7 +104,19 @@ function scoreInsight(
     selectorHints: buildSelectorHints(insight),
     selectorAliases: buildSelectorAliases(insight),
     score,
-  } satisfies MemorySearchResult;
+  };
+
+  const profile = profileLookup?.(insight.siteDomain);
+  if (profile) {
+    result.siteProfile = {
+      selectorPatterns: profile.selectorPatterns.slice(0, 5),
+      layoutFingerprints: profile.layoutFingerprints.slice(0, 3),
+      cookieBanner: profile.cookieBanner,
+      visitCount: profile.visitCount,
+    };
+  }
+
+  return result;
 }
 
 export class MemoryIndex {
@@ -128,7 +146,11 @@ export class MemoryIndex {
     this.indexedRefs = insights.slice();
   }
 
-  search(insights: TaskInsight[], input: SearchInput): MemorySearchResult[] {
+  search(
+    insights: TaskInsight[],
+    input: SearchInput,
+    profileLookup?: (domain: string) => SiteProfile | undefined,
+  ): MemorySearchResult[] {
     const normalizedIntent = normalize(input.taskIntent);
     const normalizedDomain = input.siteDomain ? normalize(input.siteDomain) : undefined;
     const limit = input.limit ?? 10;
@@ -142,7 +164,7 @@ export class MemoryIndex {
     if (limit === 1 && normalizedDomain) {
       let best: MemorySearchResult | undefined;
       for (const insight of candidates) {
-        const result = scoreInsight(insight, normalizedIntent, normalizedDomain);
+        const result = scoreInsight(insight, normalizedIntent, normalizedDomain, profileLookup);
         if (result.score > 0 && (!best || result.score > best.score)) {
           best = result;
           // Perfect score shortcut: exact intent (0.5) + domain (0.2) = 0.7 baseline.
@@ -154,7 +176,7 @@ export class MemoryIndex {
     }
 
     const ranked = candidates
-      .map((insight) => scoreInsight(insight, normalizedIntent, normalizedDomain))
+      .map((insight) => scoreInsight(insight, normalizedIntent, normalizedDomain, profileLookup))
       .filter((result) => result.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);

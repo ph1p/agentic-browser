@@ -25,7 +25,7 @@ function makeRuntime() {
   return createAgenticBrowserCore({
     env: {
       ...process.env,
-      AGENTIC_BROWSER_LOG_DIR: dir,
+      AGENTIC_BROWSER_DIR: dir,
     },
     browserController: new CookieMockBrowserController(),
   });

@@ -1,9 +1,10 @@
+import os from "node:os";
 import path from "node:path";
 
 export interface AppConfig {
   host: string;
   wsPort: number;
-  logDir: string;
+  dataDir: string;
   browserExecutablePath?: string;
   commandTimeoutMs: number;
   cdpUrl?: string;
@@ -41,7 +42,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     host: env.AGENTIC_BROWSER_HOST ?? "127.0.0.1",
     wsPort,
     commandTimeoutMs,
-    logDir: env.AGENTIC_BROWSER_LOG_DIR ?? path.resolve(process.cwd(), ".agentic-browser"),
+    dataDir: env.AGENTIC_BROWSER_DIR ?? path.join(os.homedir(), ".agentic-browser"),
     browserExecutablePath:
       env.AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH ?? env.AGENTIC_BROWSER_CHROME_PATH,
     cdpUrl: env.AGENTIC_BROWSER_CDP_URL,

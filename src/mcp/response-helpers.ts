@@ -268,6 +268,16 @@ export function compactMemoryResults(results: MemorySearchResult[]): Record<stri
           },
         );
       }
+      if (compact.siteProfile) {
+        const profile = compact.siteProfile as Record<string, unknown>;
+        compact.siteProfile = {
+          selectorPatterns: (
+            (profile.selectorPatterns ?? []) as Array<{ pattern: string; frequency: number }>
+          ).map((p) => `${p.pattern} (x${p.frequency})`),
+          cookieBanner: profile.cookieBanner,
+          visitCount: profile.visitCount,
+        };
+      }
       return compact;
     }),
   };

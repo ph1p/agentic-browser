@@ -41,13 +41,17 @@ Evidence is grouped into insights, each representing a learned pattern:
 
 Insights move through three freshness states:
 
-| State     | Meaning                            | Trigger                            |
-| --------- | ---------------------------------- | ---------------------------------- |
-| `fresh`   | Recently verified, high confidence | Successful use                     |
-| `suspect` | Showing failures or aging          | Failures or time decay             |
-| `stale`   | Old or unreliable                  | Repeated failures, long inactivity |
+| State     | Meaning                            | Trigger                                                    |
+| --------- | ---------------------------------- | ---------------------------------------------------------- |
+| `fresh`   | Recently verified, high confidence | Successful use                                             |
+| `suspect` | Showing failures or aging          | Structural failure, or 30+ days without reverification     |
+| `stale`   | Old or unreliable                  | 2+ structural failures, or 44+ days without reverification |
 
-The transition is automatic — successful executions refresh an insight, failures degrade it.
+Transitions are automatic:
+
+- **Failure-based:** structural errors (selector not found, timeout, zero-size element) increment a strike counter. One strike → suspect, two → stale.
+- **Time-based:** insights decay lazily at search time. After 30 days without reverification, fresh → suspect. After 44 days total, suspect → stale.
+- **Recovery:** a single successful execution resets freshness to `fresh` and clears the strike counter.
 
 ## Usage
 
@@ -129,12 +133,28 @@ const stats = core.memoryStats();
 
 For an LLM working with a known site:
 
-1. **Search first:** `memory-search "task:domain.com"` — check if there are known patterns
-2. **Use selector hints and aliases:** If memory returns results with high confidence and fresh status, use the `selectorHints` directly. `selectorAliases` provide human-readable names (e.g. "Submit") mapped to selectors with fallbacks — pass these as `fallbackSelectors` to `browser_interact`.
+1. **Search first:** `memory-search "task:domain.com"` — check if there are known patterns. Results include a `siteProfile` with the site's selector conventions and layout.
+2. **Use selector hints and aliases:** If memory returns results with high confidence and fresh status, use the `selectorHints` directly. `selectorAliases` provide human-readable names (e.g. "Submit") mapped to selectors with fallbacks — pass these as `fallbackSelectors` to `browser_interact`. Use `siteProfile.selectorPatterns` to understand which selector strategy the site prefers.
 3. **Fall back to discovery:** If no memory or stale results, use `elements` to discover fresh selectors (which also include `fallbackSelectors`)
-4. **Let memory record:** Successful executions are automatically recorded — no manual step needed. After 3+ successes with confidence ≥ 0.8, selector aliases are auto-generated.
-5. **Verify when needed:** If a site redesign breaks selectors, the freshness system will detect it and degrade the insight
+4. **Let memory record:** Successful executions are automatically recorded — no manual step needed. After 3+ successes with confidence ≥ 0.8, selector aliases are auto-generated. Site profiles are also built automatically from every visit.
+5. **Verify when needed:** If a site redesign breaks selectors, the freshness system will detect it and degrade the insight. Insights also decay automatically after 30+ days without use.
+
+## Site Profiles
+
+Alongside per-command insights, the memory system builds **site-level profiles** that accumulate knowledge across visits to the same domain:
+
+- **Selector patterns** — which selector strategies a site uses (e.g. `data-testid`, `aria-label`, `id-selector`) with frequency counts
+- **Layout fingerprints** — headings and landmarks observed per URL path pattern (stored when `browser_get_content` returns a summary)
+- **Navigation paths** — URL path patterns seen across visits (e.g. `/login/*`, `/dashboard/*`)
+- **Cookie banner** — whether a cookie banner was detected, if it was auto-dismissed, and which method worked
+
+Site profiles are built automatically — no manual step needed. When you search memory via `browser_search_memory`, results include a `siteProfile` field with relevant site-level context. This helps an LLM understand a site's selector conventions before interacting with it.
 
 ## Storage
 
-Memory is persisted as JSON in `{AGENTIC_BROWSER_LOG_DIR}/memory/insights.json`. It survives across sessions and process restarts.
+Memory is persisted as JSON in `{AGENTIC_BROWSER_DIR}/memory/` (default: `~/.agentic-browser/memory/`):
+
+- `insights.json` — task insights (per-command patterns)
+- `site-profiles.json` — site profiles (per-domain knowledge)
+
+Both files survive across sessions and process restarts.

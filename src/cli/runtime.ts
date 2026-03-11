@@ -118,7 +118,7 @@ export function createAgenticBrowserCore(
 ): AgenticBrowserCore {
   const context = createAppContext(options.env);
   const controller =
-    options.browserController ?? new ChromeCdpBrowserController(context.config.logDir);
+    options.browserController ?? new ChromeCdpBrowserController(context.config.dataDir);
   return new AgenticBrowserCore(context, controller);
 }
 
@@ -135,6 +135,6 @@ export function createDefaultRuntime(): Runtime {
   const tempDir = `/tmp/agentic-browser-test-${Math.random().toString(16).slice(2)}`;
   return createMockAgenticBrowserCore({
     ...process.env,
-    AGENTIC_BROWSER_LOG_DIR: tempDir,
+    AGENTIC_BROWSER_DIR: tempDir,
   });
 }
