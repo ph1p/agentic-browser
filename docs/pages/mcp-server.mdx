@@ -124,7 +124,7 @@ Navigate the browser to a URL. After successful navigation, the server also atte
 | `url`       | string | Yes      | The URL to navigate to         |
 | `sessionId` | string | No       | Uses active session if omitted |
 
-**Returns:** `resultStatus`, `resultMessage`, and optional `cookieBanner`.
+**Returns:** `resultStatus`, `resultMessage`, `currentUrl`, and optional `cookieBanner`. On failure, also includes `errorCode`.
 
 ---
 
@@ -153,6 +153,10 @@ Interact with a page element or perform browser-level actions.
 
 Navigation actions (`goBack`, `goForward`, `refresh`) and `dialog` don't require a selector.
 
+**Returns:** `resultStatus`, `resultMessage`, and `currentUrl`. On failure, also includes `errorCode`.
+
+**Error codes:** When `resultStatus` is `"failed"`, the `errorCode` field contains one of: `SELECTOR_NOT_FOUND`, `ELEMENT_COVERED`, `ELEMENT_NOT_EDITABLE`, `NAVIGATION_TIMEOUT`, `NAVIGATION_FAILED`, `CDP_DISCONNECTED`, `SESSION_DEAD`, `DIALOG_BLOCKING`, `TIMEOUT`, `UNKNOWN`.
+
 ---
 
 ### `browser_get_content`
@@ -166,13 +170,13 @@ Get the current page content. MCP responses are compacted for LLMs so the model 
 | `maxChars`  | number                                                       | No       |             | Max characters to return (default: 8000 for text, 10000 for a11y, 4000 for html, ignored for summary/title) |
 | `sessionId` | string                                                       | No       |             | Uses active session if omitted                                                                              |
 
-`summary` is the recommended first read because it returns a low-token overview with `title`, `headings`, `landmarks`, `primaryActions`, `inputs`, `alerts`, and iframe metadata, including whether frames are same-origin or cross-origin.
+`summary` is the recommended first read because it returns a low-token overview with `title`, `headings`, `landmarks`, `primaryActions`, `inputs`, `alerts`, iframe metadata, `contentExcerpt` (up to 1500 chars of visible text), and `forms` (grouped form fields with labels, types, required status, and current values), including whether frames are same-origin or cross-origin.
 
 Text, HTML, and accessibility content are automatically truncated at the default `maxChars` limit. When truncated, the response includes a `truncated: true` flag and a notice. Use a CSS `selector` to scope content instead of raising the limit.
 
 **Response shape by mode:**
 
-- `summary`: `{ mode, url, title, headings, landmarks, primaryActions, inputs, alerts, frames, totalInteractiveElements, truncatedInteractiveElements }`
+- `summary`: `{ mode, url, title, headings, landmarks, primaryActions, inputs, alerts, frames, totalInteractiveElements, truncatedInteractiveElements, contentExcerpt, forms }`
 - `title`: `{ mode, content, truncated }`
 - `text`: `{ mode, content, truncated, summaryLines, previewLines }`
 - `a11y`: `{ mode, content, truncated, headings, landmarks, actions, inputs, previewLines }`
@@ -246,6 +250,23 @@ Dismiss a cookie or consent banner on the current page. The tool tries fast DOM 
 | Parameter   | Type   | Required | Description                    |
 | ----------- | ------ | -------- | ------------------------------ |
 | `sessionId` | string | No       | Uses active session if omitted |
+
+---
+
+### `browser_screenshot`
+
+Take a screenshot of the current page and return the image as a base64-encoded string.
+
+| Parameter   | Type    | Required | Default  | Description                             |
+| ----------- | ------- | -------- | -------- | --------------------------------------- |
+| `format`    | string  | No       | `"jpeg"` | Image format: `"jpeg"` or `"png"`       |
+| `quality`   | number  | No       |          | JPEG quality (0-100, ignored for PNG)   |
+| `fullPage`  | boolean | No       | `false`  | Capture the full scrollable page        |
+| `sessionId` | string  | No       |          | Uses active session if omitted          |
+
+**Returns:** Base64-encoded image data.
+
+---
 
 ### `browser_stop_session`
 

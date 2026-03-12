@@ -36,7 +36,7 @@ interface CleanupInput {
   dryRun?: boolean;
 }
 
-interface CleanupResult {
+export interface CleanupResult {
   removedSessionIds: string[];
   removedProfileDirs: string[];
   keptActiveSessionId?: string;
@@ -273,6 +273,19 @@ export class SessionManager {
   async getInteractiveElements(sessionId: string, options: InteractiveElementsOptions) {
     const record = await this.ensureSession(sessionId);
     return await this.browser.getInteractiveElements(record.targetWsUrl, options);
+  }
+
+  async screenshot(
+    sessionId: string,
+    options?: import("./browser-controller.js").ScreenshotOptions,
+  ) {
+    const record = await this.ensureSession(sessionId);
+    return await this.browser.screenshot(record.targetWsUrl, options);
+  }
+
+  async getCurrentUrl(sessionId: string): Promise<string> {
+    const record = await this.ensureSession(sessionId);
+    return await this.browser.getCurrentUrl(record.targetWsUrl);
   }
 
   async dismissCookieBanner(sessionId: string): Promise<DismissCookieBannerResult> {

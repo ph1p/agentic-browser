@@ -100,8 +100,8 @@ Add to `.cursor/mcp.json`:
 }
 ```
 
-Once configured, you'll see 8 browser tools available in your assistant:
-`browser_start_session`, `browser_navigate`, `browser_interact`, `browser_get_content`, `browser_get_elements`, `browser_search_memory`, `browser_dismiss_cookies`, `browser_stop_session`.
+Once configured, you'll see 9 browser tools available in your assistant:
+`browser_start_session`, `browser_navigate`, `browser_interact`, `browser_get_content`, `browser_get_elements`, `browser_search_memory`, `browser_dismiss_cookies`, `browser_screenshot`, `browser_stop_session`.
 
 ## Quick Start: Programmatic API
 
@@ -114,7 +114,6 @@ const session = await core.startSession();
 // Navigate
 await core.runCommand({
   sessionId: session.sessionId,
-  commandId: "nav-1",
   type: "navigate",
   payload: { url: "https://example.com" },
 });
@@ -146,6 +145,10 @@ await core.stopSession(session.sessionId);
 | `AGENTIC_BROWSER_COMMAND_TIMEOUT_MS`     | `2000`               | Command execution timeout in milliseconds                           |
 | `AGENTIC_BROWSER_HOST`                   | `127.0.0.1`          | WebSocket server host                                               |
 | `AGENTIC_BROWSER_WS_PORT`                | `43111`              | WebSocket server port                                               |
+
+## Anti-Detection
+
+Chrome is launched with stealth flags (`--disable-blink-features=AutomationControlled`, `--disable-infobars`, `--excludeSwitches=enable-automation`) and runtime patches that remove `navigator.webdriver`, fake plugins and languages, patch `chrome.runtime`, clean `Function.prototype.toString`, and patch `Permissions.query`. The `HeadlessChrome` token is also automatically stripped from the user-agent string. No configuration is needed — stealth is always on.
 
 ## Next Steps
 

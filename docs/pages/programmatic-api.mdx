@@ -82,12 +82,13 @@ await core.stopSession(session.sessionId);
 ```ts
 const result = await core.runCommand({
   sessionId: session.sessionId,
-  commandId: "cmd-1", // unique per command
   type: "navigate", // "navigate" | "interact" | "restart" | "terminate"
   payload: { url: "https://example.com" },
 });
 // result.resultStatus: "success" | "failed" | "timed_out"
 // result.resultMessage: human-readable description
+// result.currentUrl: current page URL after command
+// result.errorCode: ErrorCode (present when resultStatus is "failed")
 ```
 
 ### Interact Payloads
@@ -185,7 +186,26 @@ for (const el of result.elements) {
   // el.visible, el.enabled
   // el.href (links), el.inputType (inputs)
   // el.ariaLabel, el.placeholder
+  // el.currentValue — current value of input/select/textarea elements
 }
+```
+
+## Screenshot
+
+```ts
+const screenshot = await core.screenshot(session.sessionId, {
+  format: "jpeg", // "jpeg" | "png" (default: "jpeg")
+  quality: 80, // 0-100, jpeg only
+  fullPage: false, // capture full scrollable page
+});
+// screenshot.data — base64-encoded image
+```
+
+## Get Current URL
+
+```ts
+const url = await core.getCurrentUrl(session.sessionId);
+// "https://example.com/current-page"
 ```
 
 ## Task Memory
@@ -223,6 +243,9 @@ import type {
   ExecuteCommandInput,
   AgenticBrowserCoreOptions,
   LaunchOptions,
+  ErrorCode,
+  ScreenshotOptions,
+  ScreenshotResult,
 } from "agentic-browser";
 ```
 
@@ -242,6 +265,7 @@ interface InteractiveElement {
   inputType?: string; // for inputs ("text", "email", ...)
   ariaLabel?: string;
   placeholder?: string;
+  currentValue?: string; // current value of input/select/textarea
 }
 ```
 
@@ -284,7 +308,6 @@ describe("my automation", () => {
     const session = await core.startSession();
     const nav = await core.runCommand({
       sessionId: session.sessionId,
-      commandId: "nav-1",
       type: "navigate",
       payload: { url: "https://example.com" },
     });

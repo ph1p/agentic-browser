@@ -1,12 +1,50 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { createAgenticBrowserCore, type AgenticBrowserCore } from "../cli/runtime.js";
+import type { ErrorCode } from "../session/browser-controller.js";
 import {
   compactInteractiveElementsResult,
   compactMemoryResults,
   compactPageContent,
 } from "./response-helpers.js";
+
+function readPackageVersion(): string {
+  try {
+    const dir = dirname(fileURLToPath(import.meta.url));
+    // Works from both src/ (dev) and dist/ (built)
+    for (const rel of ["../../package.json", "../package.json"]) {
+      try {
+        const pkg = JSON.parse(readFileSync(join(dir, rel), "utf8")) as { version?: string };
+        if (pkg.version) return pkg.version;
+      } catch {
+        // try next
+      }
+    }
+  } catch {
+    // fallback
+  }
+  return "0.0.0";
+}
+
+function classifyError(message: string): ErrorCode {
+  const lower = message.toLowerCase();
+  if (lower.includes("not found") || lower.includes("no element")) return "SELECTOR_NOT_FOUND";
+  if (lower.includes("covered") || lower.includes("overlay")) return "ELEMENT_COVERED";
+  if (lower.includes("not editable") || lower.includes("readonly")) return "ELEMENT_NOT_EDITABLE";
+  if (lower.includes("navigation failed")) return "NAVIGATION_FAILED";
+  if (lower.includes("navigation") && lower.includes("timeout")) return "NAVIGATION_TIMEOUT";
+  if (lower.includes("cdp connection") || lower.includes("websocket")) return "CDP_DISCONNECTED";
+  if (lower.includes("session") && (lower.includes("dead") || lower.includes("terminated")))
+    return "SESSION_DEAD";
+  if (lower.includes("dialog")) return "DIALOG_BLOCKING";
+  if (lower.includes("timeout")) return "TIMEOUT";
+  return "UNKNOWN";
+}
 
 let core: AgenticBrowserCore;
 let activeSessionId: string | undefined;
@@ -45,7 +83,7 @@ async function resolveSession(sessionId?: string): Promise<string> {
 
 const server = new McpServer({
   name: "agentic-browser",
-  version: "0.1.0",
+  version: readPackageVersion(),
 });
 
 server.tool(
@@ -87,12 +125,23 @@ server.tool(
         // Best-effort only.
       }
     }
+    // Get current URL so the LLM knows where it landed
+    let currentUrl: string | undefined;
+    try {
+      currentUrl = await getCore().getCurrentUrl(sid);
+    } catch {
+      // best-effort
+    }
     // Return only the fields the LLM needs
-    const compact = {
+    const compact: Record<string, unknown> = {
       resultStatus: result.resultStatus,
       resultMessage: result.resultMessage,
+      currentUrl,
       cookieBanner,
     };
+    if (result.resultStatus === "failed") {
+      compact.errorCode = classifyError(result.resultMessage ?? "");
+    }
     return { content: [{ type: "text" as const, text: JSON.stringify(compact) }] };
   },
 );
@@ -178,8 +227,22 @@ server.tool(
       type: "interact",
       payload,
     });
+    // Get current URL — especially useful after clicks that trigger navigation
+    let currentUrl: string | undefined;
+    try {
+      currentUrl = await getCore().getCurrentUrl(sid);
+    } catch {
+      // best-effort
+    }
     // Return only the fields the LLM needs
-    const compact = { resultStatus: result.resultStatus, resultMessage: result.resultMessage };
+    const compact: Record<string, unknown> = {
+      resultStatus: result.resultStatus,
+      resultMessage: result.resultMessage,
+      currentUrl,
+    };
+    if (result.resultStatus === "failed") {
+      compact.errorCode = classifyError(result.resultMessage ?? "");
+    }
     return { content: [{ type: "text" as const, text: JSON.stringify(compact) }] };
   },
 );
@@ -297,6 +360,36 @@ server.tool(
     const sid = await resolveSession(sessionId);
     const result = await getCore().dismissCookieBanner(sid);
     return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+  },
+);
+
+server.tool(
+  "browser_screenshot",
+  "Capture a screenshot of the current page. Returns a base64-encoded image. Useful for visual verification, debugging element discovery failures, or when you need to see what the page looks like. A session is auto-started if needed.",
+  {
+    format: z
+      .enum(["jpeg", "png"])
+      .default("jpeg")
+      .describe("Image format (jpeg is smaller, png is lossless)"),
+    quality: z.number().optional().describe("JPEG quality 0-100 (default 60, ignored for png)"),
+    fullPage: z
+      .boolean()
+      .default(false)
+      .describe("Capture the full scrollable page instead of just the viewport"),
+    sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
+  },
+  async ({ format, quality, fullPage, sessionId }) => {
+    const sid = await resolveSession(sessionId);
+    const result = await getCore().screenshot(sid, { format, quality, fullPage });
+    return {
+      content: [
+        {
+          type: "image" as const,
+          data: result.data,
+          mimeType: result.mimeType,
+        },
+      ],
+    };
   },
 );
 

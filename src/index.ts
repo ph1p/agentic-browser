@@ -13,5 +13,8 @@ export type {
   InteractiveElementsResult,
   DismissCookieBannerResult,
   ElementAction,
+  ErrorCode,
   LaunchOptions,
+  ScreenshotOptions,
+  ScreenshotResult,
 } from "./session/browser-controller.js";

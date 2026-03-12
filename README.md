@@ -264,6 +264,10 @@ agentic-browser memory:stats
 5. `agent memory-search` — reuse known selectors for repeated tasks.
 6. `agent stop` — terminate when done.
 
+## Anti-Detection
+
+Chrome is launched with stealth flags (`--disable-blink-features=AutomationControlled`, `--disable-infobars`, `--excludeSwitches=enable-automation`) and runtime patches that remove `navigator.webdriver`, fake plugins and languages, patch `chrome.runtime`, clean `Function.prototype.toString`, and patch `Permissions.query`. The `HeadlessChrome` token is automatically stripped from the user-agent string. Stealth is always on — no configuration needed.
+
 ## Important Notes for LLMs
 
 - Exactly **one** managed session is supported at a time.
@@ -282,7 +286,6 @@ const session = await core.startSession();
 
 await core.runCommand({
   sessionId: session.sessionId,
-  commandId: "cmd-1",
   type: "navigate",
   payload: { url: "https://example.com" },
 });

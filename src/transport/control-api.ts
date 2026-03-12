@@ -1,5 +1,8 @@
 import type { EventStore } from "../observability/event-store.js";
-import type { InteractiveElementsOptions } from "../session/browser-controller.js";
+import type {
+  InteractiveElementsOptions,
+  ScreenshotOptions,
+} from "../session/browser-controller.js";
 import type { SessionManager } from "../session/session-manager.js";
 
 export class ControlApi {
@@ -56,6 +59,14 @@ export class ControlApi {
 
   async dismissCookieBanner(sessionId: string) {
     return await this.sessions.dismissCookieBanner(sessionId);
+  }
+
+  async screenshot(sessionId: string, options?: ScreenshotOptions) {
+    return await this.sessions.screenshot(sessionId, options);
+  }
+
+  async getCurrentUrl(sessionId: string) {
+    return await this.sessions.getCurrentUrl(sessionId);
   }
 
   listEvents(sessionId: string, limit = 100) {

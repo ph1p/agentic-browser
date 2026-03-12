@@ -5,6 +5,7 @@ import {
   type BrowserController,
   type InteractiveElementRole,
   type InteractiveElementsOptions,
+  type ScreenshotOptions,
 } from "../session/browser-controller.js";
 import { SessionManager } from "../session/session-manager.js";
 import { ControlApi } from "../transport/control-api.js";
@@ -17,7 +18,7 @@ export interface AgenticBrowserCoreOptions {
 
 export interface ExecuteCommandInput {
   sessionId: string;
-  commandId: string;
+  commandId?: string;
   type: CommandType;
   payload: Record<string, unknown>;
 }
@@ -42,8 +43,10 @@ export class AgenticBrowserCore {
   }
 
   async runCommand(input: ExecuteCommandInput) {
+    const commandId =
+      input.commandId ?? `${input.type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     return await this.api.executeCommand(input.sessionId, {
-      commandId: input.commandId,
+      commandId,
       type: input.type,
       payload: input.payload,
     });
@@ -79,6 +82,14 @@ export class AgenticBrowserCore {
 
   async dismissCookieBanner(sessionId: string) {
     return await this.api.dismissCookieBanner(sessionId);
+  }
+
+  async screenshot(sessionId: string, options?: ScreenshotOptions) {
+    return await this.api.screenshot(sessionId, options);
+  }
+
+  async getCurrentUrl(sessionId: string) {
+    return await this.api.getCurrentUrl(sessionId);
   }
 
   async restartSession(sessionId: string) {

@@ -77,6 +77,7 @@ export interface InteractiveElement {
   inputType?: string;
   ariaLabel?: string;
   placeholder?: string;
+  currentValue?: string;
 }
 
 export interface InteractiveElementsOptions {
@@ -105,6 +106,29 @@ export interface DismissCookieBannerResult {
   detail?: string;
 }
 
+export type ErrorCode =
+  | "SELECTOR_NOT_FOUND"
+  | "ELEMENT_COVERED"
+  | "ELEMENT_NOT_EDITABLE"
+  | "NAVIGATION_TIMEOUT"
+  | "NAVIGATION_FAILED"
+  | "CDP_DISCONNECTED"
+  | "SESSION_DEAD"
+  | "DIALOG_BLOCKING"
+  | "TIMEOUT"
+  | "UNKNOWN";
+
+export interface ScreenshotOptions {
+  format?: "jpeg" | "png";
+  quality?: number;
+  fullPage?: boolean;
+}
+
+export interface ScreenshotResult {
+  data: string;
+  mimeType: string;
+}
+
 export interface BrowserController {
   launch(
     sessionId: string,
@@ -122,6 +146,8 @@ export interface BrowserController {
     options: InteractiveElementsOptions,
   ): Promise<InteractiveElementsResult>;
   dismissCookieBanner(targetWsUrl: string): Promise<DismissCookieBannerResult>;
+  screenshot(targetWsUrl: string, options?: ScreenshotOptions): Promise<ScreenshotResult>;
+  getCurrentUrl(targetWsUrl: string): Promise<string>;
   terminate(pid: number): void;
   closeConnection?(targetWsUrl: string): void;
 }
@@ -444,15 +470,71 @@ async function createTarget(cdpUrl: string, url = "about:blank"): Promise<string
   return await ensurePageWebSocketUrl(cdpUrl);
 }
 
-/** Verify the page is ready and optionally set a custom user-agent, using a single connection. */
+/**
+ * Apply stealth patches that remove common automation fingerprints.
+ * These run before any page loads so sites cannot detect the bot.
+ */
+const STEALTH_SCRIPT = `
+  // Remove navigator.webdriver flag
+  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+  // Provide realistic plugins array (empty = headless fingerprint)
+  Object.defineProperty(navigator, 'plugins', {
+    get: () => {
+      const plugins = [
+        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+        { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+      ];
+      plugins.length = 3;
+      Object.setPrototypeOf(plugins, PluginArray.prototype);
+      return plugins;
+    }
+  });
+
+  // Provide realistic languages
+  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+
+  // Patch chrome.runtime to look like a real Chrome
+  if (!window.chrome) window.chrome = {};
+  if (!window.chrome.runtime) window.chrome.runtime = { id: undefined };
+
+  // Remove the CDP-injected sourceURL comment from Runtime.evaluate calls
+  const origToString = Function.prototype.toString;
+  Function.prototype.toString = function() {
+    if (this === Function.prototype.toString) return 'function toString() { [native code] }';
+    return origToString.call(this);
+  };
+
+  // Patch permissions query to report "prompt" instead of "denied" for notifications
+  const origQuery = window.Permissions?.prototype?.query;
+  if (origQuery) {
+    window.Permissions.prototype.query = function(params) {
+      if (params?.name === 'notifications') {
+        return Promise.resolve({ state: 'prompt', onchange: null });
+      }
+      return origQuery.call(this, params);
+    };
+  }
+`;
+
+/** Verify the page is ready, apply stealth, and optionally set a custom user-agent. */
 async function initTarget(targetWsUrl: string, userAgent?: string): Promise<void> {
   const conn = await CdpConnection.connect(targetWsUrl);
   try {
     const enables: Promise<unknown>[] = [conn.send("Page.enable"), conn.send("Runtime.enable")];
-    if (userAgent) {
-      enables.push(conn.send("Network.enable"));
-    }
+    enables.push(conn.send("Network.enable"));
     await Promise.all(enables);
+
+    // Inject stealth patches before any page loads via Page.addScriptToEvaluateOnNewDocument
+    await conn.send("Page.addScriptToEvaluateOnNewDocument", { source: STEALTH_SCRIPT });
+
+    // Also run stealth on the current (about:blank) page
+    await conn.send("Runtime.evaluate", {
+      expression: STEALTH_SCRIPT,
+      returnByValue: true,
+    });
+
     await conn.send("Runtime.evaluate", {
       expression: "window.location.href",
       returnByValue: true,
@@ -460,6 +542,19 @@ async function initTarget(targetWsUrl: string, userAgent?: string): Promise<void
     });
     if (userAgent) {
       await conn.send("Network.setUserAgentOverride", { userAgent });
+    } else {
+      // Remove the "HeadlessChrome" identifier from the default user-agent
+      try {
+        const { userAgent: currentUA } = await conn.send<{ userAgent: string }>(
+          "Browser.getVersion",
+        );
+        if (currentUA?.includes("HeadlessChrome")) {
+          const cleanUA = currentUA.replace(/HeadlessChrome/g, "Chrome");
+          await conn.send("Network.setUserAgentOverride", { userAgent: cleanUA });
+        }
+      } catch {
+        // Not critical — best effort
+      }
     }
   } finally {
     conn.close();
@@ -1069,6 +1164,11 @@ export class ChromeCdpBrowserController implements BrowserController {
         `--user-data-dir=${profileDir}`,
         "--no-first-run",
         "--no-default-browser-check",
+        // Anti-detection: remove "Chrome is being controlled by automated software" infobar
+        // and disable the AutomationControlled Blink feature that sets navigator.webdriver
+        "--disable-blink-features=AutomationControlled",
+        "--disable-infobars",
+        "--excludeSwitches=enable-automation",
       ];
 
       if (attempt.headless) {
@@ -1552,6 +1652,44 @@ export class ChromeCdpBrowserController implements BrowserController {
     });
   }
 
+  async screenshot(targetWsUrl: string, options?: ScreenshotOptions): Promise<ScreenshotResult> {
+    return await this.withRetry(targetWsUrl, async (conn) => {
+      await this.ensureEnabled(targetWsUrl);
+      const format = options?.format ?? "jpeg";
+      const params: Record<string, unknown> = {
+        format,
+        quality: format === "jpeg" ? (options?.quality ?? 60) : undefined,
+      };
+      if (options?.fullPage) {
+        const metrics = await conn.send<{
+          contentSize: { width: number; height: number };
+        }>("Page.getLayoutMetrics");
+        params.clip = {
+          x: 0,
+          y: 0,
+          width: metrics.contentSize.width,
+          height: metrics.contentSize.height,
+          scale: 1,
+        };
+      }
+      const result = await conn.send<{ data: string }>("Page.captureScreenshot", params);
+      return {
+        data: result.data,
+        mimeType: format === "png" ? "image/png" : "image/jpeg",
+      };
+    });
+  }
+
+  async getCurrentUrl(targetWsUrl: string): Promise<string> {
+    return await this.withRetry(targetWsUrl, async (conn) => {
+      const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
+        expression: "window.location.href",
+        returnByValue: true,
+      });
+      return result.result.value ?? "";
+    });
+  }
+
   async getContent(targetWsUrl: string, options: PageContentOptions): Promise<PageContentResult> {
     if (options.mode === "summary") {
       return await this.getSummaryContent(targetWsUrl, options);
@@ -1660,6 +1798,7 @@ export class ChromeCdpBrowserController implements BrowserController {
           inputType: element.inputType,
           placeholder: element.placeholder,
           ariaLabel: element.ariaLabel,
+          currentValue: element.currentValue,
         });
       }
 
@@ -1780,11 +1919,84 @@ export class ChromeCdpBrowserController implements BrowserController {
         };
       });
 
+      // Extract a readable content excerpt so the LLM understands what the page is about
+      function extractContentExcerpt(root, maxChars) {
+        const skipTags = new Set(['SCRIPT','STYLE','NOSCRIPT','SVG','PATH','META','LINK','BR','HR','IMG']);
+        const blocks = [];
+        let totalChars = 0;
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+          acceptNode: function(node) {
+            const parent = node.parentElement;
+            if (!parent) return NodeFilter.FILTER_REJECT;
+            if (skipTags.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+            const view = (parent.ownerDocument && parent.ownerDocument.defaultView) ? parent.ownerDocument.defaultView : window;
+            const style = view.getComputedStyle(parent);
+            if (style.display === 'none' || style.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        });
+        let node;
+        while ((node = walker.nextNode())) {
+          const text = node.textContent.replace(/\\s+/g, ' ').trim();
+          if (!text || text.length < 2) continue;
+          if (totalChars + text.length > maxChars) {
+            const remaining = maxChars - totalChars;
+            if (remaining > 20) blocks.push(text.slice(0, remaining));
+            break;
+          }
+          blocks.push(text);
+          totalChars += text.length;
+        }
+        return blocks.join(' ').replace(/\\s+/g, ' ').trim();
+      }
+
+      // Group inputs by their parent form for contextual understanding
+      function discoverForms(root) {
+        const forms = [];
+        for (const form of Array.from(root.querySelectorAll('form')).slice(0, 6)) {
+          const formInputs = Array.from(form.querySelectorAll('input:not([type="hidden"]), select, textarea'));
+          if (!formInputs.length) continue;
+          const submitBtn = form.querySelector('button[type="submit"], input[type="submit"], button:not([type])');
+          forms.push({
+            action: form.getAttribute('action') || undefined,
+            method: (form.getAttribute('method') || 'get').toUpperCase(),
+            fields: formInputs.slice(0, 10).map(function(el) {
+              const tag = el.tagName.toLowerCase();
+              return {
+                name: el.getAttribute('name') || undefined,
+                type: tag === 'select' ? 'select' : tag === 'textarea' ? 'textarea' : (el.type || 'text'),
+                label: (function() {
+                  const id = el.id;
+                  if (id) {
+                    const label = root.querySelector('label[for="' + CSS.escape(id) + '"]');
+                    if (label) return textOf(label).slice(0, 60);
+                  }
+                  const closest = el.closest('label');
+                  if (closest) return textOf(closest).slice(0, 60);
+                  const ariaLabel = el.getAttribute('aria-label');
+                  if (ariaLabel) return ariaLabel.slice(0, 60);
+                  return el.getAttribute('placeholder') || undefined;
+                })(),
+                required: el.required || el.getAttribute('aria-required') === 'true' || false,
+                currentValue: ('value' in el && typeof el.value === 'string' && el.value) ? el.value.slice(0, 100) : undefined,
+              };
+            }),
+            submitText: submitBtn ? textOf(submitBtn).slice(0, 40) : undefined,
+          });
+        }
+        return forms;
+      }
+
+      const contentExcerpt = extractContentExcerpt(scopeRoot, 1500);
+      const forms = discoverForms(scopeRoot);
+
       return {
         url: window.location.href,
         title: document.title ?? '',
+        contentExcerpt,
         headings,
         landmarks,
+        forms: forms.length ? forms : undefined,
         alerts,
         frames,
         crossOriginFrameCount: allFrames.filter((frame) => {
@@ -2279,6 +2491,9 @@ export class ChromeCdpBrowserController implements BrowserController {
         if (ariaLabel) entry.ariaLabel = ariaLabel;
         const placeholder = el.getAttribute('placeholder');
         if (placeholder) entry.placeholder = placeholder;
+        if ('value' in el && typeof el.value === 'string' && el.value) {
+          entry.currentValue = el.value.slice(0, 200);
+        }
 
         results.push(entry);
       }
@@ -2620,6 +2835,19 @@ export class MockBrowserController implements BrowserController {
       return dismiss ? "dismissed confirm: mock dialog" : "accepted confirm: mock dialog";
     }
     return `interacted:${payload.action}`;
+  }
+
+  async screenshot(_targetWsUrl: string, options?: ScreenshotOptions): Promise<ScreenshotResult> {
+    const format = options?.format ?? "jpeg";
+    return {
+      data: "bW9jaw==",
+      mimeType: format === "png" ? "image/png" : "image/jpeg",
+    };
+  }
+
+  async getCurrentUrl(cdpUrl: string): Promise<string> {
+    const page = this.pages.get(cdpUrl);
+    return page?.url ?? "about:blank";
   }
 
   async getContent(cdpUrl: string, options: PageContentOptions): Promise<PageContentResult> {
