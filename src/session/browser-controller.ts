@@ -2566,20 +2566,36 @@ export class ChromeCdpBrowserController implements BrowserController {
    * Returns silently on failure — never blocks navigation.
    */
   async dismissCookieBanner(targetWsUrl: string): Promise<DismissCookieBannerResult> {
-    // Strategy 1: Cheap DOM scan first for fast-path common consent banners.
-    try {
-      const domResult = await this.dismissViaDom(targetWsUrl);
-      if (domResult.dismissed) return domResult;
-    } catch {
-      // DOM approach failed — fall through to a11y-based fallback
-    }
+    // Try up to 2 rounds — consent banners often load asynchronously.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // Strategy 1: Cheap DOM scan first for fast-path common consent banners.
+      try {
+        const domResult = await this.dismissViaDom(targetWsUrl);
+        if (domResult.dismissed) return domResult;
+      } catch {
+        // DOM approach failed — fall through to a11y-based fallback
+      }
 
-    // Strategy 2: Use the accessibility tree when DOM heuristics miss.
-    try {
-      const a11yResult = await this.dismissViaA11y(targetWsUrl);
-      if (a11yResult.dismissed) return a11yResult;
-    } catch {
-      // a11y approach failed — return false below
+      // Strategy 2: Iframe-based consent banners (Sourcepoint, etc.)
+      try {
+        const iframeResult = await this.dismissViaIframe(targetWsUrl);
+        if (iframeResult.dismissed) return iframeResult;
+      } catch {
+        // iframe approach failed — fall through
+      }
+
+      // Strategy 3: Use the accessibility tree when DOM heuristics miss.
+      try {
+        const a11yResult = await this.dismissViaA11y(targetWsUrl);
+        if (a11yResult.dismissed) return a11yResult;
+      } catch {
+        // a11y approach failed — try again after delay on first attempt
+      }
+
+      // Wait 800ms before retrying to let async banners load
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      }
     }
 
     return { dismissed: false };
@@ -2587,15 +2603,103 @@ export class ChromeCdpBrowserController implements BrowserController {
 
   private async dismissViaDom(targetWsUrl: string): Promise<DismissCookieBannerResult> {
     const expression = `(() => {
-      // Common cookie-consent button selectors (ordered by specificity)
+      function isVisible(el) {
+        if (!el) return false;
+        const style = getComputedStyle(el);
+        return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && el.offsetWidth > 0;
+      }
+
+      // Comprehensive CMP selectors (ordered by specificity/popularity)
       const selectors = [
+        // OneTrust
         '#onetrust-accept-btn-handler',
+        // Cookiebot
         '#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll',
         '#CybotCookiebotDialogBodyButtonAccept',
+        // Usercentrics
+        '#uc-btn-accept-banner',
+        '[data-testid="uc-accept-all-button"]',
+        '.uc-btn-accept',
+        // Didomi
+        '#didomi-notice-agree-button',
+        '.didomi-button[data-action="accept"]',
+        '.didomi-components-button--color.didomi-button-highlight',
+        // Quantcast / GDPR
+        '.qc-cmp2-summary-buttons button[mode="primary"]',
+        '.qc-cmp-button[data-action="accept"]',
+        '#qc-cmp2-ui button.css-1litn2c',
+        // TrustArc / TrueVault
+        '#truste-consent-button',
+        '.trustarc-agree-btn',
+        '#consent_agree',
+        // Consentmanager (zeit.de, etc.)
+        '#cmpbox .cmpboxbtn.cmpboxbtnyes',
+        '#cmpwelcomebtnyes a',
+        '#cmpbntyestxt',
+        '.cmpboxbtnyes',
+        'a.cmpboxbtn.cmpboxbtnyes',
+        // iubenda
+        '.iubenda-cs-accept-btn',
+        '#iubenda-cs-banner .iubenda-cs-accept-btn',
+        // Klaro
+        '.klaro .cm-btn-accept',
+        '.klaro .cm-btn-success',
+        // Osano
+        '.osano-cm-accept-all',
+        '.osano-cm-button--type_accept',
+        // CookieYes / GDPR Cookie Consent
+        '#cookie_action_close_header',
+        '.cky-btn-accept',
+        '[data-cky-tag="accept-button"]',
+        // Termly
+        '.t-acceptAllButton',
+        '#termly-code-snippet-support .t-acceptAllButton',
+        // Axeptio
+        '#axeptio_btn_acceptAll',
+        '[data-axeptio="accept"]',
+        // Complianz / Really Simple Cookie Consent
+        '.cmplz-accept',
+        '#cmplz-cookiebanner-container .cmplz-accept',
+        // CookieFirst
+        '[data-cookiefirst-action="accept"]',
+        // Cookie Notice / Cookie Law Info
+        '#cookie_action_close_header_reject',
+        '#cn-accept-cookie',
+        // Borlabs Cookie (WordPress)
+        '#CookieBoxSaveButton',
+        'a[data-cookie-accept]',
+        // Piwik PRO
+        '#PiwikPROConsentForm-agree-to-all',
+        '.PiwikPROConsentForm-agree-to-all-button',
+        // Civic Cookie Control
+        '#ccc-recommended-settings',
+        '#ccc-dismiss-button',
+        '.ccc-accept-settings',
+        // Moove GDPR (WordPress)
+        '.moove-gdpr-infobar-allow-all',
+        '#moove_gdpr_cookie_modal .moove-gdpr-modal-allow-all',
+        // CookieHub
+        '.cookiehub-accept',
+        '#cookiehub-accept-btn',
+        '.ch2-btn-primary',
+        // Cookie Script
+        '#cookiescript_accept',
+        '#cookiescript_injected .cookiescript_accept',
+        // HubSpot Cookie Banner
+        '#hs-eu-confirmation-button',
+        '#hs-eu-cookie-confirmation .hs-eu-cta',
+        // MediaVine
+        '[data-name="mediavine-gdpr-cmp"] .pur-accept',
+        // Sirdata
+        '#sd-cmp .sd-cmp-JEaB',
+        // Google Consent Mode / Funding Choices
+        '.fc-cta-consent',
+        '.fc-button-background[aria-label="Consent"]',
+        // Generic selectors
         '#accept-cookies', '#acceptCookies',
         '#cookie-accept', '#cookieAccept',
         '#gdpr-accept', '#consent-accept',
-        '#uc-btn-accept-banner',
+        '#cookies-accept-all', '#accept-all-cookies',
         '.cc-accept', '.cc-btn.cc-dismiss',
         '.cookie-consent-accept', '.cookie-accept-btn',
         '.js-cookie-accept', '.js-accept-cookies',
@@ -2603,39 +2707,99 @@ export class ChromeCdpBrowserController implements BrowserController {
         '.gdpr-accept',
         '[data-testid="cookie-accept"]',
         '[data-action="accept-cookies"]',
-        '[data-cookiefirst-action="accept"]',
+        '[data-gdpr="accept"]',
+        '[data-consent="accept"]',
       ];
 
-      for (const sel of selectors) {
+      // Query selector in main DOM and open shadow roots
+      function deepQuery(sel) {
         const el = document.querySelector(sel);
-        if (el && el.offsetParent !== null) {
-          el.click();
-          return JSON.stringify({ dismissed: true, method: 'selector', detail: sel });
+        if (el) return el;
+        for (const host of document.querySelectorAll('*')) {
+          if (host.shadowRoot) {
+            const inner = host.shadowRoot.querySelector(sel);
+            if (inner) return inner;
+          }
         }
+        return null;
+      }
+
+      for (const sel of selectors) {
+        try {
+          const el = deepQuery(sel);
+          if (el && isVisible(el)) {
+            el.click();
+            return JSON.stringify({ dismissed: true, method: 'selector', detail: sel });
+          }
+        } catch { /* invalid selector — skip */ }
       }
 
       // Text-based fallback: find visible buttons with consent text
+      // Patterns are intentionally loose — they use .* instead of strict ^/$ anchors
       const patterns = [
-        /^accept\\s*(all)?\\s*(cookies)?$/i,
-        /^(alle\\s+)?akzeptieren$/i,
-        /^(i\\s+)?agree$/i,
-        /^allow\\s*(all)?\\s*(cookies)?$/i,
-        /^(alle\\s+)?zustimmen$/i,
-        /^got\\s*it$/i,
+        // English
+        /accept\\s*(all)?\\s*(cookies)?/i,
+        /allow\\s*(all)?\\s*(cookies)?/i,
+        /(i\\s+)?agree(\\s+to\\s+all)?/i,
+        /got\\s*it/i,
         /^ok$/i,
         /^consent$/i,
-        /^(j')?accepte(r)?$/i,
-        /^(tout\\s+)?accepter$/i,
+        /continue\\s+without\\s+accepting/i,
+        // German
+        /(alle\\s+)?akzeptieren/i,
+        /alle\\s+cookies\\s+akzeptieren/i,
+        /(alle\\s+)?zustimmen/i,
+        /einwilligen/i,
+        /einverstanden/i,
+        /alles\\s+erlauben/i,
+        /alles\\s+akzeptieren/i,
+        /geht\\s+klar/i,
+        /verstanden/i,
+        // French
+        /(j')?accepte(r)?(\\s+tout)?/i,
+        /(tout\\s+)?accepter/i,
+        /autoriser/i,
+        // Spanish
+        /aceptar(\\s+todo)?/i,
+        /aceptar\\s+cookies/i,
+        // Italian
+        /accett(a|o)(\\s+tutt[oi])?/i,
+        /accetta\\s+cookies/i,
+        // Dutch
+        /(alle\\s+)?accepteren/i,
+        /alles\\s+accepteren/i,
+        // Portuguese
+        /aceitar(\\s+tudo)?/i,
+        /aceitar\\s+cookies/i,
+        // Polish
+        /akceptuj(\\s+wszystk[oi]e)?/i,
+        /zgadzam\\s+si/i,
+        // Swedish
+        /acceptera(\\s+alla)?/i,
+        // Danish
+        /accepter(\\s+alle)?/i,
+        // Norwegian
+        /aksepter(\\s+alle)?/i,
       ];
-      const candidates = [
-        ...document.querySelectorAll('button'),
-        ...document.querySelectorAll('a[role="button"]'),
-        ...document.querySelectorAll('[role="button"]'),
-      ];
+      // Collect candidates from main DOM and open shadow roots
+      function collectButtons(root) {
+        const results = [];
+        for (const tag of ['button', 'a[role="button"]', '[role="button"]', 'div[role="button"]', 'span[role="button"]']) {
+          results.push(...root.querySelectorAll(tag));
+        }
+        // Traverse open shadow roots for CMPs that use web components
+        for (const el of root.querySelectorAll('*')) {
+          if (el.shadowRoot) {
+            results.push(...collectButtons(el.shadowRoot));
+          }
+        }
+        return results;
+      }
+      const candidates = collectButtons(document);
       for (const el of candidates) {
-        if (!el.offsetParent) continue;
+        if (!isVisible(el)) continue;
         const text = (el.textContent || '').trim();
-        if (text.length > 40) continue;
+        if (text.length > 60) continue;
         for (const pat of patterns) {
           if (pat.test(text)) {
             el.click();
@@ -2663,48 +2827,195 @@ export class ChromeCdpBrowserController implements BrowserController {
   }
 
   /**
+   * Handle iframe-based consent banners (Sourcepoint, some OneTrust configurations, etc.)
+   * These banners render inside an iframe that needs to be accessed separately.
+   */
+  private async dismissViaIframe(targetWsUrl: string): Promise<DismissCookieBannerResult> {
+    const expression = `(() => {
+      // Known consent iframe selectors
+      const iframeSelectors = [
+        'iframe[id^="sp_message_iframe"]',              // Sourcepoint (dynamic ID suffix)
+        '#sp_message_iframe',                        // Sourcepoint (static ID)
+        'iframe[id*="sp_message"]',                  // Sourcepoint variants
+        'div[id^="sp_message_container"] iframe',    // Sourcepoint container with iframe
+        'iframe[title*="cookie"]',                   // Generic cookie iframes
+        'iframe[title*="consent"]',                  // Generic consent iframes
+        'iframe[title*="Cookie"]',
+        'iframe[title*="Consent"]',
+        'iframe[title*="Privacy"]',
+        'iframe[title*="privacy"]',
+        'iframe[title*="GDPR"]',
+        'iframe[src*="consent"]',
+        'iframe[src*="cookie"]',
+        'iframe[src*="privacy"]',
+        'iframe[src*="sourcepoint"]',
+        'iframe[src*="consentmanager"]',
+      ];
+
+      for (const sel of iframeSelectors) {
+        try {
+          const iframe = document.querySelector(sel);
+          if (!iframe) continue;
+          const doc = iframe.contentDocument || iframe.contentWindow?.document;
+          if (!doc) continue;
+
+          // Try known selectors inside the iframe
+          const innerSelectors = [
+            // Sourcepoint specific
+            'button.sp_choice_type_11',              // Accept all
+            'button.sp_choice_type_ACCEPT_ALL',      // Accept all variant
+            'button.sp_choice_type_SAVE_AND_EXIT',   // Save & exit
+            '.priv-save-btn',                        // Sourcepoint frame
+            '.message-button',                       // Generic Sourcepoint
+            // Title-based
+            'button[title*="Accept"]', 'button[title*="accept"]',
+            'button[title*="Agree"]', 'button[title*="agree"]',
+            'button[title*="Allow"]',
+            'button[title*="Akzeptieren"]', 'button[title*="akzeptieren"]',
+            'button[title*="Zustimmen"]',
+          ];
+          for (const innerSel of innerSelectors) {
+            const btn = doc.querySelector(innerSel);
+            if (btn && btn.offsetWidth > 0) {
+              btn.click();
+              return JSON.stringify({ dismissed: true, method: 'iframe', detail: sel + ' > ' + innerSel });
+            }
+          }
+
+          // Text-based fallback inside iframe
+          const buttons = doc.querySelectorAll('button, [role="button"]');
+          for (const btn of buttons) {
+            const text = (btn.textContent || '').trim();
+            if (text.length > 60) continue;
+            if (/accept|agree|allow|akzeptieren|zustimmen|einwilligen|accepter|aceptar/i.test(text)) {
+              btn.click();
+              return JSON.stringify({ dismissed: true, method: 'iframe-text', detail: text });
+            }
+          }
+        } catch { /* cross-origin iframe — skip */ }
+      }
+
+      return JSON.stringify({ dismissed: false });
+    })()`;
+
+    return await this.withRetry(targetWsUrl, async (conn) => {
+      await this.ensureEnabled(targetWsUrl);
+      const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
+        expression,
+        returnByValue: true,
+      });
+      const raw = result.result.value ?? '{"dismissed":false}';
+      try {
+        return JSON.parse(raw) as DismissCookieBannerResult;
+      } catch {
+        return { dismissed: false };
+      }
+    });
+  }
+
+  /**
    * Use the CDP Accessibility tree to find and click consent buttons.
-   * This works even when consent banners use shadow DOM, iframes, or obfuscated class names.
+   * This works even when consent banners use shadow DOM or obfuscated class names.
+   * Also queries cross-origin iframe frames via Page.getFrameTree for Sourcepoint etc.
    */
   private async dismissViaA11y(targetWsUrl: string): Promise<DismissCookieBannerResult> {
     return await this.withRetry(targetWsUrl, async (conn) => {
       await conn.send("Accessibility.enable");
+      await conn.send("Page.enable");
 
-      const { nodes } = await conn.send<{
-        nodes: Array<{
-          nodeId: string;
-          parentId?: string;
-          backendDOMNodeId?: number;
-          role?: { value: string };
-          name?: { value: string };
-          properties?: Array<{ name: string; value: { value: unknown } }>;
-          ignored?: boolean;
-        }>;
-      }>("Accessibility.getFullAXTree");
+      type AXNode = {
+        nodeId: string;
+        parentId?: string;
+        backendDOMNodeId?: number;
+        role?: { value: string };
+        name?: { value: string };
+        properties?: Array<{ name: string; value: { value: unknown } }>;
+        ignored?: boolean;
+      };
 
-      // Consent-related name patterns (EN, DE, FR, ES, IT, NL, PT)
+      // Collect a11y nodes from the main frame
+      const { nodes } = await conn.send<{ nodes: AXNode[] }>("Accessibility.getFullAXTree");
+
+      // Also collect from child frames (cross-origin iframes like Sourcepoint)
+      const allNodes: AXNode[] = [...nodes];
+      try {
+        const { frameTree } = await conn.send<{
+          frameTree: {
+            frame: { id: string };
+            childFrames?: Array<{ frame: { id: string; url?: string } }>;
+          };
+        }>("Page.getFrameTree");
+        for (const child of frameTree.childFrames ?? []) {
+          const url = child.frame.url ?? "";
+          // Only query frames that look consent-related
+          if (
+            /consent|cookie|privacy|sourcepoint|didomi|cmp|gdpr|trustarc|consentmanager|sp_message|onetrust|usercentrics|consent-cdn/i.test(url) ||
+            url === "about:blank"
+          ) {
+            try {
+              const frameResult = await conn.send<{ nodes: AXNode[] }>(
+                "Accessibility.getFullAXTree",
+                { frameId: child.frame.id },
+              );
+              allNodes.push(...frameResult.nodes);
+            } catch {
+              // frame may have been destroyed — skip
+            }
+          }
+        }
+      } catch {
+        // Page.getFrameTree failed — proceed with main frame only
+      }
+
+      // Consent-related name patterns (EN, DE, FR, ES, IT, NL, PT, PL, SV, DA, NO)
       const consentPatterns = [
-        /^accept\s*(all)?\s*(cookies)?$/i,
-        /^(i\s+)?agree(\s+to\s+all)?$/i,
-        /^allow\s*(all)?\s*(cookies)?$/i,
-        /^got\s*it$/i,
+        // English
+        /accept\s*(all)?\s*(cookies)?/i,
+        /allow\s*(all)?\s*(cookies)?/i,
+        /(i\s+)?agree(\s+to\s+all)?/i,
+        /got\s*it/i,
         /^ok$/i,
         /^consent$/i,
-        /^(alle\s+)?akzeptieren$/i,
-        /^(alle\s+)?zustimmen$/i,
-        /^einverstanden$/i,
-        /^(j')?accepte(r)?(\s+tout)?$/i,
-        /^(tout\s+)?accepter$/i,
-        /^aceptar(\s+todo)?$/i,
-        /^accetta(\s+tutto)?$/i,
-        /^accepteren$/i,
-        /^alle\s+accepteren$/i,
-        /^aceitar(\s+tudo)?$/i,
+        // German
+        /(alle\s+)?akzeptieren/i,
+        /alle\s+cookies\s+akzeptieren/i,
+        /(alle\s+)?zustimmen/i,
+        /einwilligen/i,
+        /einverstanden/i,
+        /alles\s+erlauben/i,
+        /alles\s+akzeptieren/i,
+        /geht\s+klar/i,
+        /verstanden/i,
+        // French
+        /(j')?accepte(r)?(\s+tout)?/i,
+        /(tout\s+)?accepter/i,
+        /autoriser/i,
+        // Spanish
+        /aceptar(\s+todo)?/i,
+        /aceptar\s+cookies/i,
+        // Italian
+        /accett(a|o)(\s+tutt[oi])?/i,
+        /accetta\s+cookies/i,
+        // Dutch
+        /(alle\s+)?accepteren/i,
+        /alles\s+accepteren/i,
+        // Portuguese
+        /aceitar(\s+tudo)?/i,
+        /aceitar\s+cookies/i,
+        // Polish
+        /akceptuj(\s+wszystk[oi]e)?/i,
+        /zgadzam\s+si/i,
+        // Swedish
+        /acceptera(\s+alla)?/i,
+        // Danish
+        /accepter(\s+alle)?/i,
+        // Norwegian
+        /aksepter(\s+alle)?/i,
       ];
 
       // Find button/link nodes whose accessible name matches consent patterns
       const candidates: Array<{ nodeId: string; backendDOMNodeId: number; name: string }> = [];
-      for (const node of nodes) {
+      for (const node of allNodes) {
         if (node.ignored) continue;
         const role = node.role?.value;
         if (role !== "button" && role !== "link") continue;
