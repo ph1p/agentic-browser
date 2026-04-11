@@ -1,4 +1,3 @@
-import type { EventStore } from "../observability/event-store.js";
 import type {
   InteractiveElementsOptions,
   ScreenshotOptions,
@@ -6,10 +5,7 @@ import type {
 import type { SessionManager } from "../session/session-manager.js";
 
 export class ControlApi {
-  constructor(
-    private readonly sessions: SessionManager,
-    private readonly eventStore: EventStore,
-  ) {}
+  constructor(private readonly sessions: SessionManager) {}
 
   async createSession(input: { browser: "chrome" }) {
     return await this.sessions.createSession(input);
@@ -70,7 +66,7 @@ export class ControlApi {
   }
 
   listEvents(sessionId: string, limit = 100) {
-    return { events: this.eventStore.list(sessionId, limit) };
+    return { events: this.sessions.listEvents(sessionId, limit) };
   }
 
   searchMemory(input: { taskIntent: string; siteDomain?: string; limit?: number }) {

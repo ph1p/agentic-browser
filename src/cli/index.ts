@@ -28,11 +28,12 @@ import { runMemoryInspect } from "./commands/memory-inspect.js";
 import { runMemoryVerify } from "./commands/memory-verify.js";
 import { runMemoryStats } from "./commands/memory-stats.js";
 
+const collect = (value: string, previous: string[] = []) => [...previous, value];
+
 async function main() {
   const runtime = createCliRuntime();
   const program = new Command();
   program.name("agentic-browser").description("Agentic browser CLI");
-  const collect = (value: string, previous: string[] = []) => [...previous, value];
 
   program
     .command("session:start")

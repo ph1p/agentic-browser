@@ -150,6 +150,7 @@ export interface BrowserController {
   getCurrentUrl(targetWsUrl: string): Promise<string>;
   terminate(pid: number): void;
   closeConnection?(targetWsUrl: string): void;
+  dispose?(): void;
 }
 
 interface CdpTarget {
@@ -397,6 +398,11 @@ async function getJson<T>(url: string, timeoutMs = 5000): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** Debugger connection timing */
+const DEBUGGER_READY_TIMEOUT_MS = 15_000;
+const DEBUGGER_INITIAL_RETRY_DELAY_MS = 50;
+const DEBUGGER_MAX_RETRY_DELAY_MS = 250;
+
 /** Check if the debug port is accepting TCP connections (faster than an HTTP fetch). */
 function probePort(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -413,11 +419,10 @@ function probePort(port: number): Promise<boolean> {
 }
 
 async function waitForDebugger(port: number): Promise<void> {
-  const maxMs = 15000;
   const start = Date.now();
-  let delay = 50; // exponential backoff: 50 → 100 → 200 → 250 (capped)
+  let delay = DEBUGGER_INITIAL_RETRY_DELAY_MS;
 
-  while (Date.now() - start < maxMs) {
+  while (Date.now() - start < DEBUGGER_READY_TIMEOUT_MS) {
     // Quick TCP probe first — much cheaper than an HTTP round-trip.
     if (await probePort(port)) {
       // Port is open; confirm the HTTP endpoint is actually responding.
@@ -429,7 +434,7 @@ async function waitForDebugger(port: number): Promise<void> {
       }
     }
     await new Promise((resolve) => setTimeout(resolve, delay));
-    delay = Math.min(delay * 2, 250);
+    delay = Math.min(delay * 2, DEBUGGER_MAX_RETRY_DELAY_MS);
   }
   throw new Error("Chrome debug endpoint did not become ready in time");
 }
@@ -1003,6 +1008,10 @@ function buildKeyDispatchPayload(inputKey: string): KeyDispatchPayload {
   };
 }
 
+/** Connection pool configuration */
+const CONNECTION_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const CONNECTION_CLEANUP_INTERVAL_MS = 60_000; // 1 minute
+
 export class ChromeCdpBrowserController implements BrowserController {
   private readonly connections = new Map<
     string,
@@ -1023,16 +1032,24 @@ export class ChromeCdpBrowserController implements BrowserController {
       targetWsUrl: string,
     ) => Promise<CdpClient> = CdpConnection.connect,
   ) {
-    // Evict connections idle for >5 minutes
+    // Evict idle connections periodically
     this.cleanupInterval = setInterval(() => {
-      const cutoff = Date.now() - 5 * 60 * 1000;
+      const cutoff = Date.now() - CONNECTION_IDLE_TIMEOUT_MS;
       for (const [url, entry] of this.connections) {
         if (entry.lastUsedAt < cutoff) {
           this.dropConnection(url);
         }
       }
-    }, 60_000);
+    }, CONNECTION_CLEANUP_INTERVAL_MS);
     this.cleanupInterval.unref();
+  }
+
+  /** Stop the cleanup interval and close all connections. Call when disposing the controller. */
+  dispose(): void {
+    clearInterval(this.cleanupInterval);
+    for (const url of this.connections.keys()) {
+      this.dropConnection(url);
+    }
   }
 
   private async getConnection(targetWsUrl: string): Promise<CdpClient> {
@@ -1250,16 +1267,23 @@ export class ChromeCdpBrowserController implements BrowserController {
   }
 
   private async handleDialogAction(targetWsUrl: string, payload: InteractPayload): Promise<string> {
+    const DIALOG_WAIT_TIMEOUT_MS = 500;
+    const DIALOG_POLL_INTERVAL_MS = 10;
+    const MAX_POLL_ATTEMPTS = 10;
+
     return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
       const cached = this.connections.get(targetWsUrl);
 
-      // If no pending dialog, briefly wait for one (500ms)
+      // If no pending dialog, wait for one with polling to avoid race conditions
       if (!cached?.pendingDialog) {
         try {
-          await conn.waitForEvent("Page.javascriptDialogOpening", 500);
-          // Give the listener time to populate pendingDialog
-          await new Promise((r) => setTimeout(r, 50));
+          await conn.waitForEvent("Page.javascriptDialogOpening", DIALOG_WAIT_TIMEOUT_MS);
+          // Poll for pendingDialog to be populated by the event listener
+          for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
+            if (cached?.pendingDialog) break;
+            await new Promise((r) => setTimeout(r, DIALOG_POLL_INTERVAL_MS));
+          }
         } catch {
           return "no dialog present";
         }
@@ -2949,7 +2973,9 @@ export class ChromeCdpBrowserController implements BrowserController {
           const url = child.frame.url ?? "";
           // Only query frames that look consent-related
           if (
-            /consent|cookie|privacy|sourcepoint|didomi|cmp|gdpr|trustarc|consentmanager|sp_message|onetrust|usercentrics|consent-cdn/i.test(url) ||
+            /consent|cookie|privacy|sourcepoint|didomi|cmp|gdpr|trustarc|consentmanager|sp_message|onetrust|usercentrics|consent-cdn/i.test(
+              url,
+            ) ||
             url === "about:blank"
           ) {
             try {

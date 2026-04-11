@@ -31,7 +31,7 @@ export class AgenticBrowserCore {
   constructor(context: AppContext, browserController: BrowserController) {
     this.context = context;
     this.sessions = new SessionManager(context, browserController);
-    this.api = new ControlApi(this.sessions, context.eventStore);
+    this.api = new ControlApi(this.sessions);
   }
 
   async startSession(input: { browser: "chrome" } = { browser: "chrome" }) {

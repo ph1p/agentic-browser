@@ -11,7 +11,7 @@ function createApi() {
     AGENTIC_BROWSER_DIR: `/tmp/agentic-browser-memory-contract-${Math.random().toString(16).slice(2)}`,
   });
   const sessionManager = new SessionManager(context, new MockBrowserController());
-  return new ControlApi(sessionManager, context.eventStore);
+  return new ControlApi(sessionManager);
 }
 
 describe("memory search contract", () => {

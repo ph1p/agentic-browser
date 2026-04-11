@@ -422,6 +422,8 @@ server.tool(
 export async function main() {
   const transport = new StdioServerTransport();
 
+  // MCP SDK uses property-based event handlers, not addEventListener
+  // oxlint-disable-next-line unicorn/prefer-add-event-listener
   transport.onclose = async () => {
     if (activeSessionId) {
       try {

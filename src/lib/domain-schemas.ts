@@ -1,5 +1,36 @@
 import { z } from "zod";
 
+export const InteractActionSchema = z.enum([
+  "click",
+  "type",
+  "press",
+  "waitFor",
+  "evaluate",
+  "scroll",
+  "hover",
+  "select",
+  "toggle",
+  "goBack",
+  "goForward",
+  "refresh",
+  "dialog",
+]);
+
+export const InteractPayloadSchema = z.object({
+  action: InteractActionSchema,
+  selector: z.string().optional(),
+  fallbackSelectors: z.array(z.string()).optional(),
+  text: z.string().optional(),
+  key: z.string().optional(),
+  value: z.string().optional(),
+  scrollX: z.number().optional(),
+  scrollY: z.number().optional(),
+  timeoutMs: z.number().optional(),
+});
+
+export type InteractAction = z.infer<typeof InteractActionSchema>;
+export type InteractPayloadInput = z.infer<typeof InteractPayloadSchema>;
+
 export const SessionStatusSchema = z.enum([
   "starting",
   "ready",

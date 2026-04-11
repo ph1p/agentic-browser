@@ -20,6 +20,6 @@ export async function runCommand(
       payload: input.payload,
     });
   } catch (error) {
-    throw new Error(`Command rejected: ${(error as Error).message}`);
+    throw new Error(`Command rejected: ${(error as Error).message}`, { cause: error });
   }
 }

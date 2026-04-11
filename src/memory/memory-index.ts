@@ -41,7 +41,7 @@ function buildSelectorHints(insight: TaskInsight): string[] {
   }
 
   return [...weightedSelectors.entries()]
-    .sort((a, b) => b[1] - a[1])
+    .toSorted((a, b) => b[1] - a[1])
     .slice(0, 5)
     .map(([selector]) => selector);
 }
@@ -178,7 +178,7 @@ export class MemoryIndex {
     const ranked = candidates
       .map((insight) => scoreInsight(insight, normalizedIntent, normalizedDomain, profileLookup))
       .filter((result) => result.score > 0)
-      .sort((a, b) => b.score - a.score)
+      .toSorted((a, b) => b.score - a.score)
       .slice(0, limit);
 
     return ranked;

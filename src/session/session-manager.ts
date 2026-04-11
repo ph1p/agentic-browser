@@ -4,12 +4,13 @@ import path from "node:path";
 import { URL } from "node:url";
 
 import type { AppContext } from "../cli/app.js";
-import type {
-  Command,
-  CommandType,
-  Session,
-  SessionEvent,
-  SessionStatus,
+import {
+  InteractPayloadSchema,
+  type Command,
+  type CommandType,
+  type Session,
+  type SessionEvent,
+  type SessionStatus,
 } from "../lib/domain-schemas.js";
 import {
   type BrowserController,
@@ -135,6 +136,7 @@ export class SessionManager {
         );
         throw new Error(
           `Session is not ready and recovery failed: ${(restartError as Error).message}`,
+          { cause: restartError },
         );
       }
     }
@@ -182,9 +184,13 @@ export class SessionManager {
         this.store.setLastUrl(sessionId, finalUrl);
         resultMessage = `Navigated to ${finalUrl}`;
       } else if (input.type === "interact") {
+        const parsedPayload = InteractPayloadSchema.safeParse(input.payload);
+        if (!parsedPayload.success) {
+          throw new Error(`Invalid interact payload: ${parsedPayload.error.message}`);
+        }
         const interactionResult = await this.browser.interact(
           record.targetWsUrl,
-          input.payload as unknown as InteractPayload,
+          parsedPayload.data as InteractPayload,
         );
         resultMessage = `Interaction result: ${interactionResult}`;
       } else if (input.type === "restart") {

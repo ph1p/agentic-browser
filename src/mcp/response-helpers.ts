@@ -213,7 +213,7 @@ function summarizeElements(elements: Array<Record<string, unknown>>) {
   }
 
   return {
-    countsByRole: Object.fromEntries([...byRole.entries()].sort((a, b) => b[1] - a[1])),
+    countsByRole: Object.fromEntries([...byRole.entries()].toSorted((a, b) => b[1] - a[1])),
     primaryActions,
   };
 }

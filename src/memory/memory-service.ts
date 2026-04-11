@@ -36,10 +36,21 @@ export interface RecordExecutionInput {
   selector?: string;
 }
 
-const SEARCH_CACHE_TTL_MS = 2000;
+/** Memory service configuration */
+const SEARCH_CACHE_TTL_MS = 2_000;
+const MAX_EVIDENCE_RECORDS = 50;
+const MAX_RECIPE_STEPS = 8;
+const MAX_SELECTOR_ALIASES = 10;
+
+/** Site profile limits */
 const MAX_NAVIGATION_PATHS = 20;
 const MAX_LAYOUT_FINGERPRINTS = 10;
 const MAX_SELECTOR_PATTERNS = 15;
+
+function normalizePathSegment(value: string): string {
+  const [firstSegment = ""] = value.replace(/\/\*$/, "").split("/").filter(Boolean);
+  return firstSegment.toLowerCase();
+}
 
 export class MemoryService {
   private readonly store: TaskInsightStore;
@@ -120,7 +131,7 @@ export class MemoryService {
       suspect: insights.filter((x) => x.freshness === "suspect").length,
       stale: insights.filter((x) => x.freshness === "stale").length,
       topDomains: [...byDomain.entries()]
-        .sort((a, b) => b[1] - a[1])
+        .toSorted((a, b) => b[1] - a[1])
         .slice(0, 10)
         .map(([domain, count]) => ({ domain, count })),
     };
@@ -176,7 +187,7 @@ export class MemoryService {
     const refreshed = applySuccess({
       ...matched,
       useCount: matched.useCount + 1,
-      evidence: [...matched.evidence.slice(-49), evidence],
+      evidence: [...matched.evidence.slice(-(MAX_EVIDENCE_RECORDS - 1)), evidence],
       actionRecipe: this.mergeRecipe(matched.actionRecipe, input.step),
       expectedOutcome: input.expectedOutcome,
     });
@@ -219,7 +230,7 @@ export class MemoryService {
       {
         ...matched,
         useCount: matched.useCount + 1,
-        evidence: [...matched.evidence.slice(-49), evidence],
+        evidence: [...matched.evidence.slice(-(MAX_EVIDENCE_RECORDS - 1)), evidence],
       },
       signal,
     );
@@ -254,7 +265,7 @@ export class MemoryService {
       profile.layoutFingerprints.push(fingerprint);
       if (profile.layoutFingerprints.length > MAX_LAYOUT_FINGERPRINTS) {
         profile.layoutFingerprints = profile.layoutFingerprints
-          .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))
+          .toSorted((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))
           .slice(0, MAX_LAYOUT_FINGERPRINTS);
       }
     }
@@ -412,13 +423,8 @@ export class MemoryService {
   }
 
   private sameFirstPathSegment(left: string, right: string): boolean {
-    const normalize = (value: string): string => {
-      const [firstSegment = ""] = value.replace(/\/\*$/, "").split("/").filter(Boolean);
-      return firstSegment.toLowerCase();
-    };
-
-    const leftSegment = normalize(left);
-    const rightSegment = normalize(right);
+    const leftSegment = normalizePathSegment(left);
+    const rightSegment = normalizePathSegment(right);
     return Boolean(leftSegment) && leftSegment === rightSegment;
   }
 
@@ -465,10 +471,10 @@ export class MemoryService {
       if (alias) {
         aliasMap.set(selector, { alias, selector, fallbackSelectors: [] });
       }
-      if (aliasMap.size >= 10) break;
+      if (aliasMap.size >= MAX_SELECTOR_ALIASES) break;
     }
 
-    return { ...insight, selectorAliases: [...aliasMap.values()].slice(0, 10) };
+    return { ...insight, selectorAliases: [...aliasMap.values()].slice(0, MAX_SELECTOR_ALIASES) };
   }
 
   private deriveAliasName(selector: string): string | undefined {
@@ -506,6 +512,6 @@ export class MemoryService {
     if (exists) {
       return recipe;
     }
-    return [...recipe, step].slice(-8);
+    return [...recipe, step].slice(-MAX_RECIPE_STEPS);
   }
 }
