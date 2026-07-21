@@ -84,9 +84,9 @@
     "react-dom": "^19.2.7",
     "semantic-release": "^25.0.8",
     "tsdown": "^0.22.12",
-    "typescript": "^7.0.2",
+    "typescript": "^6.0.2",
     "vitest": "^4.1.10",
-    "vocs": "2.6.1"
+    "vocs": "1.4.1"
   },
   "engines": {
     "node": ">=22"
