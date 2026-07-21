@@ -68,6 +68,18 @@ export class TaskInsightStore {
     this.markDirty();
   }
 
+  /** Remove an insight by id. Returns true if a record was removed. */
+  remove(insightId: string): boolean {
+    const insights = this.getCache();
+    const index = insights.findIndex((entry) => entry.insightId === insightId);
+    if (index < 0) {
+      return false;
+    }
+    insights.splice(index, 1);
+    this.markDirty();
+    return true;
+  }
+
   replaceMany(insights: TaskInsight[]): void {
     for (const insight of insights) {
       TaskInsightSchema.parse(insight);
@@ -123,9 +135,15 @@ export class TaskInsightStore {
     } catch {
       const obj = raw as { insights?: unknown[] };
       if (Array.isArray(obj?.insights)) {
-        const salvaged = obj.insights.filter((item) => TaskInsightSchema.safeParse(item).success);
+        // Keep the PARSED output, not the raw item — parsing applies schema
+        // defaults (selectorAliases, TaskStep.payload, …) that the raw object
+        // may be missing; keeping raw would leave those undefined downstream.
+        const salvaged = obj.insights
+          .map((item) => TaskInsightSchema.safeParse(item))
+          .filter((result) => result.success)
+          .map((result) => result.data);
         if (salvaged.length > 0) {
-          const state: MemoryState = { insights: salvaged as TaskInsight[] };
+          const state: MemoryState = { insights: salvaged };
           this.backupAndReset();
           this.writeDisk(state);
           return state;

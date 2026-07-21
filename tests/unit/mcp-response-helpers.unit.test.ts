@@ -83,24 +83,22 @@ describe("compactPageContent", () => {
 });
 
 describe("compactInteractiveElementsResult", () => {
-  it("drops redundant fields and adds a summary", () => {
+  it("replaces selectors with a ref and adds a summary", () => {
     const result = compactInteractiveElementsResult(
-      {
-        elements: [
-          {
-            selector: "#buy",
-            role: "button",
-            tagName: "button",
-            text: "Buy now",
-            actions: ["click"],
-            visible: true,
-            enabled: true,
-            ariaLabel: "Buy now",
-          },
-        ],
-        totalFound: 1,
-        truncated: false,
-      },
+      [
+        {
+          ref: "e1",
+          selector: "#buy",
+          role: "button",
+          tagName: "button",
+          text: "Buy now",
+          actions: ["click"],
+          visible: true,
+          enabled: true,
+          ariaLabel: "Buy now",
+        },
+      ],
+      { totalFound: 1, truncated: false },
       true,
     );
 
@@ -109,10 +107,12 @@ describe("compactInteractiveElementsResult", () => {
       truncated: false,
       summary: {
         countsByRole: { button: 1 },
+        primaryActions: [{ ref: "e1", role: "button", text: "Buy now" }],
       },
     });
+    // ref replaces the raw selector in the agent-facing view
     expect((result.elements as Array<Record<string, unknown>>)[0]).toEqual({
-      selector: "#buy",
+      ref: "e1",
       role: "button",
       text: "Buy now",
     });

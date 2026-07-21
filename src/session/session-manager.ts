@@ -199,6 +199,8 @@ export class SessionManager {
       } else if (input.type === "terminate") {
         await this.terminateSession(sessionId);
         resultMessage = "Session terminated";
+      } else {
+        throw new Error(`Unsupported command type: ${String(input.type)}`);
       }
     } catch (error) {
       resultStatus = "failed";
@@ -353,6 +355,9 @@ export class SessionManager {
 
   async restartSession(sessionId: string): Promise<Session> {
     const record = this.mustGetRecord(sessionId);
+    if (record.session.status === "terminated") {
+      throw new Error("Session is terminated. Start a new session.");
+    }
 
     // Clean up old connection and process regardless of status
     if (this.browser.closeConnection) {
@@ -402,6 +407,9 @@ export class SessionManager {
 
   rotateAuthToken(sessionId: string): string {
     const record = this.mustGetRecord(sessionId);
+    if (record.session.status === "terminated") {
+      throw new Error("Session is terminated. Start a new session.");
+    }
     this.ctx.tokenService.revoke(sessionId);
     const nextToken = this.ctx.tokenService.issue(sessionId);
 
@@ -563,9 +571,14 @@ export class SessionManager {
       throw new Error("Session target is missing. Restart the session.");
     }
 
-    const seeded = this.ctx.tokenService.get(sessionId);
-    if (!seeded || seeded !== record.session.authTokenRef) {
-      this.ctx.tokenService.seed(sessionId, record.session.authTokenRef);
+    // Re-seed the token service from the persisted record so bearer auth works
+    // across CLI process restarts — but never for terminated sessions, whose
+    // token was revoked (re-seeding would resurrect the revoked credential).
+    if (record.session.status !== "terminated") {
+      const seeded = this.ctx.tokenService.get(sessionId);
+      if (!seeded || seeded !== record.session.authTokenRef) {
+        this.ctx.tokenService.seed(sessionId, record.session.authTokenRef);
+      }
     }
 
     return record;

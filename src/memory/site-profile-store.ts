@@ -53,13 +53,17 @@ export class SiteProfileStore {
   }
 
   upsert(profile: SiteProfile): void {
-    SiteProfileSchema.parse(profile);
+    // Normalize the key so upsert and get() agree — get() lowercases the lookup,
+    // so storing a mixed-case domain here would make it permanently unfindable
+    // and append a duplicate row on every write.
+    const normalized: SiteProfile = { ...profile, domain: profile.domain.toLowerCase() };
+    SiteProfileSchema.parse(normalized);
     const profiles = this.getCache();
-    const index = profiles.findIndex((p) => p.domain === profile.domain);
+    const index = profiles.findIndex((p) => p.domain === normalized.domain);
     if (index >= 0) {
-      profiles[index] = profile;
+      profiles[index] = normalized;
     } else {
-      profiles.push(profile);
+      profiles.push(normalized);
     }
     this.markDirty();
   }
@@ -108,9 +112,14 @@ export class SiteProfileStore {
     } catch {
       const obj = raw as { profiles?: unknown[] };
       if (Array.isArray(obj?.profiles)) {
-        const salvaged = obj.profiles.filter((item) => SiteProfileSchema.safeParse(item).success);
+        // Keep the PARSED output so schema defaults (visitCount, …) are applied
+        // — keeping the raw item would leave defaulted fields undefined.
+        const salvaged = obj.profiles
+          .map((item) => SiteProfileSchema.safeParse(item))
+          .filter((result) => result.success)
+          .map((result) => result.data);
         if (salvaged.length > 0) {
-          const state: SiteProfileState = { profiles: salvaged as SiteProfile[] };
+          const state: SiteProfileState = { profiles: salvaged };
           this.backupAndReset();
           this.writeDisk(state);
           return state;

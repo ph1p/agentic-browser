@@ -37,7 +37,7 @@ src/
     chrome-launcher.ts    — Chrome executable discovery & launch
   transport/
     control-api.ts        — ControlApi facade (delegates to SessionManager)
-    ws-server.ts          — Authenticated WebSocket server
+    auth-middleware.ts    — verifyBearerAuth() token check helper
   memory/
     memory-service.ts     — Task memory coordination
     memory-index.ts       — Search/ranking (fuzzy match + freshness + domain)

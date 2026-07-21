@@ -1,6 +1,5 @@
 import type {
   InteractiveElement,
-  InteractiveElementsResult,
   PageContentMode,
   PageContentResult,
 } from "../session/browser-controller.js";
@@ -199,16 +198,12 @@ function summarizeElements(elements: Array<Record<string, unknown>>) {
     byRole.set(role, (byRole.get(role) ?? 0) + 1);
     if (
       primaryActions.length < 12 &&
-      typeof element.selector === "string" &&
+      typeof element.ref === "string" &&
+      element.ref &&
       typeof element.text === "string" &&
       element.text
     ) {
-      primaryActions.push({
-        role,
-        text: element.text,
-        selector: element.selector,
-        fallbackSelectors: element.fallbackSelectors,
-      });
+      primaryActions.push({ ref: element.ref, role, text: element.text });
     }
   }
 
@@ -219,7 +214,7 @@ function summarizeElements(elements: Array<Record<string, unknown>>) {
 }
 
 function compactElement(
-  element: InteractiveElement,
+  element: InteractiveElement & { ref?: string },
   visibleOnly: boolean,
 ): Record<string, unknown> {
   const compact: Record<string, unknown> = { ...element };
@@ -227,6 +222,14 @@ function compactElement(
   if (visibleOnly) delete compact.visible;
   delete compact.actions;
   delete compact.tagName;
+  // Refs are the agent's handle now — the raw selectors resolve server-side, so
+  // keep them out of the agent-facing payload (both cost tokens and invite the
+  // agent to hand-author brittle selectors instead of pointing at a ref).
+  if (compact.ref) {
+    delete compact.selector;
+    delete compact.fallbackSelectors;
+  }
+  if (!compact.ref) delete compact.ref;
   if (compact.enabled === true) delete compact.enabled;
   if (!compact.text) delete compact.text;
   if (compact.ariaLabel && compact.ariaLabel === compact.text) delete compact.ariaLabel;
@@ -236,15 +239,16 @@ function compactElement(
 }
 
 export function compactInteractiveElementsResult(
-  result: InteractiveElementsResult,
+  elements: Array<InteractiveElement & { ref?: string }>,
+  meta: { totalFound: number; truncated: boolean },
   visibleOnly: boolean,
 ): Record<string, unknown> {
-  const elements = result.elements.map((el) => compactElement(el, visibleOnly));
+  const compacted = elements.map((el) => compactElement(el, visibleOnly));
   return {
-    elements,
-    totalFound: result.totalFound,
-    truncated: result.truncated,
-    summary: summarizeElements(elements),
+    elements: compacted,
+    totalFound: meta.totalFound,
+    truncated: meta.truncated,
+    summary: summarizeElements(compacted),
   };
 }
 

@@ -132,6 +132,11 @@ async function main() {
           payload: JSON.parse(payloadJson),
         });
         console.log(JSON.stringify(result));
+        // A command that ran but failed must exit non-zero so scripted callers
+        // can detect it (the command itself didn't throw — it reported failure).
+        if (result.resultStatus === "failed" || result.resultStatus === "timed_out") {
+          process.exitCode = 1;
+        }
       },
     );
 
@@ -499,7 +504,8 @@ async function main() {
 
 void main()
   .then((keepAlive) => {
-    if (!keepAlive) process.exit(0);
+    // Honor an exit code an action may have set (e.g. a failed command:run).
+    if (!keepAlive) process.exit(process.exitCode ?? 0);
   })
   .catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);

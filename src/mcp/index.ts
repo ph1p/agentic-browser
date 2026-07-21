@@ -6,12 +6,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { createAgenticBrowserCore, type AgenticBrowserCore } from "../cli/runtime.js";
-import type { ErrorCode } from "../session/browser-controller.js";
+import type { ErrorCode, InteractiveElementRole } from "../session/browser-controller.js";
 import {
   compactInteractiveElementsResult,
   compactMemoryResults,
   compactPageContent,
 } from "./response-helpers.js";
+import { ElementRefRegistry } from "./element-refs.js";
 
 function readPackageVersion(): string {
   try {
@@ -65,6 +66,39 @@ function getCore(): AgenticBrowserCore {
 
 function genId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+const refs = new ElementRefRegistry();
+
+/**
+ * Discover interactive elements, assign fresh refs for the session, and return
+ * the compact agent-facing view (refs + role/text, no raw selectors). This is
+ * the single "what can I see and do now" snapshot both browser_get_elements and
+ * the post-interact page state share.
+ */
+async function snapshotElements(
+  sessionId: string,
+  opts: {
+    visibleOnly?: boolean;
+    limit?: number;
+    selector?: string;
+    roles?: InteractiveElementRole[];
+  } = {},
+): Promise<Record<string, unknown>> {
+  const visibleOnly = opts.visibleOnly ?? true;
+  const result = await getCore().getInteractiveElements({
+    sessionId,
+    visibleOnly,
+    limit: opts.limit ?? 50,
+    selector: opts.selector,
+    roles: opts.roles,
+  });
+  const { elements } = refs.assign(sessionId, result.elements);
+  return compactInteractiveElementsResult(
+    elements,
+    { totalFound: result.totalFound, truncated: result.truncated },
+    visibleOnly,
+  );
 }
 
 /**
@@ -148,7 +182,7 @@ server.tool(
 
 server.tool(
   "browser_interact",
-  'Interact with a page element or perform browser actions. Element actions: "click", "type", "press", "waitFor", "scroll", "hover", "select", "toggle". Navigation actions: "goBack" (browser back), "goForward" (browser forward), "refresh" (reload page). Dialog action: "dialog" (handle JS alert/confirm/prompt — use text="dismiss" to cancel, value="..." for prompt input). Fallback selectors are tried automatically if the primary selector fails. A session is auto-started if needed.',
+  'Interact with a page element or perform browser actions. Point at a target with `ref` (from browser_get_elements, e.g. "e3") — like clicking what you see. `selector` (CSS) still works as an escape hatch. Element actions: "click", "type", "press", "waitFor", "scroll", "hover", "select", "toggle". Navigation actions: "goBack", "goForward", "refresh". Dialog action: "dialog" (text="dismiss" to cancel, value="..." for prompt input). After an action that can change the page, the response includes a fresh `pageState` (new refs + summary) so you can see the result and pick your next action without a separate browser_get_elements call. A session is auto-started if needed.',
   {
     action: z
       .enum([
@@ -166,13 +200,15 @@ server.tool(
         "dialog",
       ])
       .describe("The interaction type"),
-    selector: z.string().optional().describe("CSS selector for the target element"),
+    ref: z
+      .string()
+      .optional()
+      .describe('Element ref from browser_get_elements (e.g. "e3") — preferred over selector'),
+    selector: z.string().optional().describe("CSS selector for the target element (escape hatch)"),
     fallbackSelectors: z
       .array(z.string())
       .optional()
-      .describe(
-        "Backup CSS selectors tried if the primary selector fails (from browser_get_elements)",
-      ),
+      .describe("Backup CSS selectors tried if the primary selector fails"),
     text: z
       .string()
       .optional()
@@ -201,6 +237,7 @@ server.tool(
   },
   async ({
     action,
+    ref,
     selector,
     fallbackSelectors,
     text,
@@ -213,8 +250,33 @@ server.tool(
   }) => {
     const sid = await resolveSession(sessionId);
     const payload: Record<string, unknown> = { action };
-    if (selector) payload.selector = selector;
-    if (fallbackSelectors) payload.fallbackSelectors = fallbackSelectors;
+
+    // Resolve a ref to its stored selector target. An explicit selector wins if
+    // both are given; a ref that no longer resolves is reported clearly rather
+    // than silently acting on nothing.
+    if (!selector && ref) {
+      const resolved = refs.resolve(sid, ref);
+      if (!resolved) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                resultStatus: "failed",
+                resultMessage: `Unknown or stale ref "${ref}". Call browser_get_elements to refresh element refs.`,
+                errorCode: "SELECTOR_NOT_FOUND" satisfies ErrorCode,
+              }),
+            },
+          ],
+        };
+      }
+      payload.selector = resolved.selector;
+      if (resolved.fallbackSelectors) payload.fallbackSelectors = resolved.fallbackSelectors;
+    } else {
+      if (selector) payload.selector = selector;
+      if (fallbackSelectors) payload.fallbackSelectors = fallbackSelectors;
+    }
+
     if (text) payload.text = text;
     if (key) payload.key = key;
     if (value) payload.value = value;
@@ -243,6 +305,21 @@ server.tool(
     if (result.resultStatus === "failed") {
       compact.errorCode = classifyError(result.resultMessage ?? "");
     }
+
+    // Interact-returns-state: after a successful action that can change what is
+    // on the page, include a fresh snapshot (new refs + summary) so the agent
+    // sees the result and can pick its next action without a separate call —
+    // the way a person looks at the page again after acting. Pure inspection
+    // ("hover", "waitFor") leaves the page unchanged, so we skip it there.
+    const pageChanging = action !== "hover" && action !== "waitFor";
+    if (result.resultStatus === "success" && pageChanging) {
+      try {
+        compact.pageState = await snapshotElements(sid, { visibleOnly: true, limit: 50 });
+      } catch {
+        // best-effort — the action already succeeded
+      }
+    }
+
     return { content: [{ type: "text" as const, text: JSON.stringify(compact) }] };
   },
 );
@@ -277,14 +354,19 @@ server.tool(
       maxChars: effectiveMaxChars,
     });
     return {
-      content: [{ type: "text" as const, text: JSON.stringify(compactPageContent(result)) }],
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(compactPageContent(result, effectiveMaxChars)),
+        },
+      ],
     };
   },
 );
 
 server.tool(
   "browser_get_elements",
-  "Discover all interactive elements on the current page (buttons, links, inputs, etc.). Returns CSS selectors and fallbackSelectors you can use with browser_interact. Pass fallbackSelectors to browser_interact for automatic retry when the primary selector breaks. Actions are derived from role: link/button/custom→click, input/textarea/contenteditable→click+type+press, select→click+select, checkbox/radio→toggle. A session is auto-started if needed.",
+  'Discover interactive elements on the current page (buttons, links, inputs, etc.). Each element gets a short ref like "e1" — pass that ref to browser_interact to act on it, the way you would point at something you see rather than describing its markup. Refs stay valid until the next browser_get_elements call or the next page-changing interaction. Actions per role: link/button/custom→click, input/textarea/contenteditable→click+type+press, select→click+select, checkbox/radio→toggle. A session is auto-started if needed.',
   {
     roles: z
       .array(
@@ -312,20 +394,9 @@ server.tool(
   },
   async ({ roles, visibleOnly, limit, selector, sessionId }) => {
     const sid = await resolveSession(sessionId);
-    const result = await getCore().getInteractiveElements({
-      sessionId: sid,
-      roles,
-      visibleOnly,
-      limit,
-      selector,
-    });
+    const snapshot = await snapshotElements(sid, { roles, visibleOnly, limit, selector });
     return {
-      content: [
-        {
-          type: "text" as const,
-          text: JSON.stringify(compactInteractiveElementsResult(result, visibleOnly)),
-        },
-      ],
+      content: [{ type: "text" as const, text: JSON.stringify(snapshot) }],
     };
   },
 );
@@ -412,6 +483,7 @@ server.tool(
       };
     }
     await getCore().stopSession(sid);
+    refs.clear(sid);
     if (activeSessionId === sid) activeSessionId = undefined;
     return {
       content: [{ type: "text" as const, text: JSON.stringify({ ok: true, stopped: sid }) }],

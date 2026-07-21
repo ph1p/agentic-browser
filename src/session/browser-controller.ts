@@ -179,6 +179,11 @@ interface CdpClient {
     timeoutMs?: number,
   ): Promise<T>;
   waitForEvent<T = unknown>(method: string, timeoutMs?: number): Promise<T>;
+  waitForEventMatching?<T = unknown>(
+    method: string,
+    predicate: (params: T) => boolean,
+    timeoutMs?: number,
+  ): Promise<T>;
   onEvent?<T = unknown>(method: string, handler: (params: T) => void): () => void;
   close(): void;
 }
@@ -366,6 +371,31 @@ export class CdpConnection implements CdpClient {
     });
   }
 
+  /**
+   * Resolve on the first event of `method` whose params satisfy `predicate`.
+   * Uses the persistent onEvent channel so non-matching events (e.g. subframe
+   * navigations) don't consume the wait.
+   */
+  waitForEventMatching<T = unknown>(
+    method: string,
+    predicate: (params: T) => boolean,
+    timeoutMs = 5000,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      let unsubscribe = () => {};
+      const timeout = setTimeout(() => {
+        unsubscribe();
+        reject(new Error(`Timed out waiting for ${method}`));
+      }, timeoutMs);
+      unsubscribe = this.onEvent<T>(method, (params) => {
+        if (!predicate(params)) return;
+        clearTimeout(timeout);
+        unsubscribe();
+        resolve(params);
+      });
+    });
+  }
+
   onEvent<T = unknown>(method: string, handler: (params: T) => void): () => void {
     const handlers = this.eventHandlers.get(method) ?? new Set<(params: unknown) => void>();
     const wrapped = (params: unknown) => {
@@ -479,7 +509,12 @@ async function createTarget(cdpUrl: string, url = "about:blank"): Promise<string
  * Apply stealth patches that remove common automation fingerprints.
  * These run before any page loads so sites cannot detect the bot.
  */
-const STEALTH_SCRIPT = `
+const STEALTH_SCRIPT = `(() => {
+  // Guard: registered once per CDP session, so re-connects would re-run the patches
+  // and the non-configurable defineProperty calls below would throw.
+  if (window.__agenticStealthApplied) return;
+  window.__agenticStealthApplied = true;
+
   // Remove navigator.webdriver flag
   Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 
@@ -521,10 +556,15 @@ const STEALTH_SCRIPT = `
       return origQuery.call(this, params);
     };
   }
-`;
+})();`;
 
-/** Verify the page is ready, apply stealth, and optionally set a custom user-agent. */
-async function initTarget(targetWsUrl: string, userAgent?: string): Promise<void> {
+/**
+ * Verify the page is ready, apply stealth, and optionally set a custom user-agent.
+ * Returns the user-agent override that was applied (if any) so callers can re-apply
+ * it on later CDP sessions — script/UA overrides are scoped to the session that set
+ * them and die when this bootstrap connection closes.
+ */
+async function initTarget(targetWsUrl: string, userAgent?: string): Promise<string | undefined> {
   const conn = await CdpConnection.connect(targetWsUrl);
   try {
     const enables: Promise<unknown>[] = [conn.send("Page.enable"), conn.send("Runtime.enable")];
@@ -547,23 +587,55 @@ async function initTarget(targetWsUrl: string, userAgent?: string): Promise<void
     });
     if (userAgent) {
       await conn.send("Network.setUserAgentOverride", { userAgent });
-    } else {
-      // Remove the "HeadlessChrome" identifier from the default user-agent
-      try {
-        const { userAgent: currentUA } = await conn.send<{ userAgent: string }>(
-          "Browser.getVersion",
-        );
-        if (currentUA?.includes("HeadlessChrome")) {
-          const cleanUA = currentUA.replace(/HeadlessChrome/g, "Chrome");
-          await conn.send("Network.setUserAgentOverride", { userAgent: cleanUA });
-        }
-      } catch {
-        // Not critical — best effort
-      }
+      return userAgent;
     }
+    // Remove the "HeadlessChrome" identifier from the default user-agent
+    try {
+      const { userAgent: currentUA } = await conn.send<{ userAgent: string }>("Browser.getVersion");
+      if (currentUA?.includes("HeadlessChrome")) {
+        const cleanUA = currentUA.replace(/HeadlessChrome/g, "Chrome");
+        await conn.send("Network.setUserAgentOverride", { userAgent: cleanUA });
+        return cleanUA;
+      }
+    } catch {
+      // Not critical — best effort
+    }
+    return undefined;
   } finally {
     conn.close();
   }
+}
+
+interface PageEvaluateResult<V> {
+  result: { value?: V; objectId?: string; subtype?: string };
+  exceptionDetails?: {
+    text?: string;
+    exception?: { description?: string; value?: unknown };
+  };
+}
+
+/**
+ * Run Runtime.evaluate and surface in-page exceptions as errors.
+ * CDP reports page-side throws via `exceptionDetails` on an otherwise successful
+ * response — callers that read `result.value` directly would treat a throw as an
+ * empty (successful) result.
+ */
+async function evaluateOnPage<V = unknown>(
+  conn: CdpClient,
+  params: Record<string, unknown>,
+): Promise<PageEvaluateResult<V>> {
+  const result = await conn.send<PageEvaluateResult<V>>("Runtime.evaluate", params);
+  const details = result.exceptionDetails;
+  if (details) {
+    const raw =
+      details.exception?.description ??
+      (typeof details.exception?.value === "string" ? details.exception.value : undefined) ??
+      details.text ??
+      "Page evaluation failed";
+    // description carries the stack trace — keep only the message line
+    throw new Error(raw.split("\n")[0].replace(/^Error:\s*/, ""));
+  }
+  return result;
 }
 
 async function getFreePort(): Promise<number> {
@@ -1012,6 +1084,17 @@ function buildKeyDispatchPayload(inputKey: string): KeyDispatchPayload {
 const CONNECTION_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const CONNECTION_CLEANUP_INTERVAL_MS = 60_000; // 1 minute
 
+/**
+ * True when the error means the socket was closed/not-open — i.e. the request
+ * was never delivered, so re-running it cannot double-apply a side effect.
+ * Deliberately excludes CDP timeouts: a timed-out request may have reached
+ * Chrome, so replaying it for a non-idempotent op could fire the action twice.
+ */
+function isConnectionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("CDP connection closed") || message.includes("WebSocket not open");
+}
+
 export class ChromeCdpBrowserController implements BrowserController {
   private readonly connections = new Map<
     string,
@@ -1025,6 +1108,14 @@ export class ChromeCdpBrowserController implements BrowserController {
   >();
 
   private readonly cleanupInterval: ReturnType<typeof setInterval>;
+
+  /**
+   * User-agent override resolved at target init, keyed by target ws URL.
+   * Stealth script + UA override are scoped to the CDP session that set them,
+   * so every pooled connection must re-apply them (initTarget's bootstrap
+   * connection closes right after launch).
+   */
+  private readonly userAgentOverrides = new Map<string, string>();
 
   constructor(
     private readonly baseDir: string,
@@ -1060,12 +1151,51 @@ export class ChromeCdpBrowserController implements BrowserController {
     }
 
     const conn = await this.connectionFactory(targetWsUrl);
+    await this.applySessionOverrides(conn, targetWsUrl);
     this.connections.set(targetWsUrl, {
       conn,
       enabled: { page: false, runtime: false },
       lastUsedAt: Date.now(),
     });
     return conn;
+  }
+
+  /**
+   * Re-apply session-scoped stealth patches + UA override on a fresh connection.
+   * Overrides are per-CDP-session, so every pooled connection must re-apply them
+   * — including in a fresh CLI process that reconnects to an existing target
+   * (the in-memory override map is empty there, so fall back to deriving one).
+   */
+  private async applySessionOverrides(conn: CdpClient, targetWsUrl: string): Promise<void> {
+    try {
+      await conn.send("Page.addScriptToEvaluateOnNewDocument", { source: STEALTH_SCRIPT });
+
+      let userAgent = this.userAgentOverrides.get(targetWsUrl);
+      if (!userAgent) {
+        // No explicit override known to this process — at least strip the
+        // "HeadlessChrome" tell from the browser's own UA (determinable here).
+        try {
+          const { userAgent: currentUA } = await conn.send<{ userAgent: string }>(
+            "Browser.getVersion",
+          );
+          if (currentUA?.includes("HeadlessChrome")) {
+            userAgent = currentUA.replace(/HeadlessChrome/g, "Chrome");
+            this.userAgentOverrides.set(targetWsUrl, userAgent);
+          }
+        } catch {
+          // best effort
+        }
+      }
+
+      if (userAgent) {
+        // Emulation.setUserAgentOverride changes navigator.userAgent in the
+        // renderer (Network's variant mainly rewrites request headers and isn't
+        // reliably reflected in JS). Set before the page commits.
+        await conn.send("Emulation.setUserAgentOverride", { userAgent });
+      }
+    } catch {
+      // Stealth is best-effort — never block real work on it.
+    }
   }
 
   private dropConnection(targetWsUrl: string): void {
@@ -1094,7 +1224,10 @@ export class ChromeCdpBrowserController implements BrowserController {
     }
     await waitForDebugger(port);
     const targetWsUrl = await createTarget(cdpUrl);
-    await initTarget(targetWsUrl, options?.userAgent);
+    const appliedUa = await initTarget(targetWsUrl, options?.userAgent);
+    if (appliedUa) {
+      this.userAgentOverrides.set(targetWsUrl, appliedUa);
+    }
     return { pid: 0, cdpUrl, targetWsUrl };
   }
 
@@ -1207,7 +1340,10 @@ export class ChromeCdpBrowserController implements BrowserController {
         if (!child.pid) {
           throw new Error("Failed to launch Chrome process");
         }
-        await initTarget(targetWsUrl, userAgent);
+        const appliedUa = await initTarget(targetWsUrl, userAgent);
+        if (appliedUa) {
+          this.userAgentOverrides.set(targetWsUrl, appliedUa);
+        }
         return { pid: child.pid, cdpUrl, targetWsUrl };
       } catch (error) {
         lastError = error as Error;
@@ -1224,12 +1360,28 @@ export class ChromeCdpBrowserController implements BrowserController {
     throw new Error(lastError?.message ?? "Unable to launch Chrome");
   }
 
-  /** Execute fn with a pooled connection; on failure drop connection and retry once. */
-  private async withRetry<T>(targetWsUrl: string, fn: (conn: CdpClient) => Promise<T>): Promise<T> {
+  /**
+   * Execute fn with a pooled connection; on failure drop the connection and retry once.
+   *
+   * `retryOn`:
+   *  - "any" (default): retry any error — safe for reads/idempotent work.
+   *  - "connection": retry only when the connection itself died. Use for
+   *    non-idempotent input (click/type/press/toggle/select): a mid-operation
+   *    connection drop after an event was already dispatched must not replay it,
+   *    and in-page errors (selector missing, covered element) are not transient.
+   */
+  private async withRetry<T>(
+    targetWsUrl: string,
+    fn: (conn: CdpClient) => Promise<T>,
+    retryOn: "any" | "connection" = "any",
+  ): Promise<T> {
     let conn = await this.getConnection(targetWsUrl);
     try {
       return await fn(conn);
-    } catch {
+    } catch (error) {
+      if (retryOn === "connection" && !isConnectionError(error)) {
+        throw error;
+      }
       this.dropConnection(targetWsUrl);
       conn = await this.getConnection(targetWsUrl);
       return await fn(conn);
@@ -1240,22 +1392,41 @@ export class ChromeCdpBrowserController implements BrowserController {
     return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
 
-      // Listen for frameNavigated to capture the final URL from the event itself,
-      // avoiding a separate Runtime.evaluate round-trip.
-      const navigatedPromise = conn
-        .waitForEvent<{ frame?: { url?: string } }>("Page.frameNavigated", 6000)
-        .catch(() => undefined);
-      const loadPromise = Promise.race([
-        conn.waitForEvent("Page.loadEventFired", 6000),
-        conn.waitForEvent("Page.frameStoppedLoading", 6000),
-      ]);
+      // Only trust events for the main frame (no parentId) — a late subframe
+      // navigation from the previous page (ad/analytics iframe) must not be
+      // mistaken for the final URL or the load-complete signal.
+      const mainFrameNavigated = conn.waitForEventMatching
+        ? conn
+            .waitForEventMatching<{ frame?: { url?: string; parentId?: string } }>(
+              "Page.frameNavigated",
+              (params) => !params.frame?.parentId,
+              6000,
+            )
+            .catch(() => undefined)
+        : conn
+            .waitForEvent<{ frame?: { url?: string } }>("Page.frameNavigated", 6000)
+            .catch(() => undefined);
 
-      const navResult = await conn.send<{ errorText?: string }>("Page.navigate", { url });
+      const navResult = await conn.send<{ errorText?: string; frameId?: string }>("Page.navigate", {
+        url,
+      });
       if (navResult.errorText) {
         throw new Error(`Navigation failed: ${navResult.errorText}`);
       }
 
-      const navigatedEvent = await navigatedPromise;
+      const mainFrameId = navResult.frameId;
+      const loadPromise = Promise.race([
+        conn.waitForEvent("Page.loadEventFired", 6000),
+        conn.waitForEventMatching
+          ? conn.waitForEventMatching<{ frameId?: string }>(
+              "Page.frameStoppedLoading",
+              (params) => !mainFrameId || params.frameId === mainFrameId,
+              6000,
+            )
+          : conn.waitForEvent("Page.frameStoppedLoading", 6000),
+      ]);
+
+      const navigatedEvent = await mainFrameNavigated;
       try {
         await loadPromise;
       } catch {
@@ -1333,14 +1504,11 @@ export class ChromeCdpBrowserController implements BrowserController {
 `,
     );
 
-    const result = await conn.send<{ result: { value?: { x?: number; y?: number } } }>(
-      "Runtime.evaluate",
-      {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-      },
-    );
+    const result = await evaluateOnPage<{ x?: number; y?: number }>(conn, {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
 
     const point = result.result.value;
     if (!point || typeof point.x !== "number" || typeof point.y !== "number") {
@@ -1408,16 +1576,17 @@ export class ChromeCdpBrowserController implements BrowserController {
 `,
     );
 
-    const result = await conn.send<{ result: { value?: "ready" | "cleared" } }>(
-      "Runtime.evaluate",
-      {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-      },
-    );
+    const result = await evaluateOnPage<"ready" | "cleared">(conn, {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    });
 
-    return result.result.value ?? "ready";
+    const value = result.result.value;
+    if (value !== "ready" && value !== "cleared") {
+      throw new Error("Unable to resolve type target");
+    }
+    return value;
   }
 
   private async dispatchMouseClick(conn: CdpClient, x: number, y: number): Promise<void> {
@@ -1462,7 +1631,7 @@ export class ChromeCdpBrowserController implements BrowserController {
 `,
     );
 
-    await conn.send("Runtime.evaluate", {
+    await evaluateOnPage(conn, {
       expression,
       returnByValue: true,
       awaitPromise: true,
@@ -1494,10 +1663,16 @@ export class ChromeCdpBrowserController implements BrowserController {
     if (payload.action === "goBack") {
       return await this.withRetry(targetWsUrl, async (conn) => {
         await this.ensureEnabled(targetWsUrl);
-        const navigatedPromise = conn
-          .waitForEvent<{ frame?: { url?: string } }>("Page.frameNavigated", 3000)
-          .catch(() => undefined);
-        await conn.send("Runtime.evaluate", {
+        const navigatedPromise = (
+          conn.waitForEventMatching
+            ? conn.waitForEventMatching<{ frame?: { url?: string; parentId?: string } }>(
+                "Page.frameNavigated",
+                (params) => !params.frame?.parentId,
+                3000,
+              )
+            : conn.waitForEvent<{ frame?: { url?: string } }>("Page.frameNavigated", 3000)
+        ).catch(() => undefined);
+        await evaluateOnPage(conn, {
           expression: "history.back()",
           returnByValue: true,
         });
@@ -1519,10 +1694,16 @@ export class ChromeCdpBrowserController implements BrowserController {
     if (payload.action === "goForward") {
       return await this.withRetry(targetWsUrl, async (conn) => {
         await this.ensureEnabled(targetWsUrl);
-        const navigatedPromise = conn
-          .waitForEvent<{ frame?: { url?: string } }>("Page.frameNavigated", 3000)
-          .catch(() => undefined);
-        await conn.send("Runtime.evaluate", {
+        const navigatedPromise = (
+          conn.waitForEventMatching
+            ? conn.waitForEventMatching<{ frame?: { url?: string; parentId?: string } }>(
+                "Page.frameNavigated",
+                (params) => !params.frame?.parentId,
+                3000,
+              )
+            : conn.waitForEvent<{ frame?: { url?: string } }>("Page.frameNavigated", 3000)
+        ).catch(() => undefined);
+        await evaluateOnPage(conn, {
           expression: "history.forward()",
           returnByValue: true,
         });
@@ -1566,53 +1747,59 @@ export class ChromeCdpBrowserController implements BrowserController {
       payload.action === "type" ||
       payload.action === "press"
     ) {
-      return await this.withRetry(targetWsUrl, async (conn) => {
-        await this.ensureEnabled(targetWsUrl);
+      // Non-idempotent input: retry only when the socket was closed (request
+      // never delivered) so a mid-flight drop can't dispatch the event twice.
+      return await this.withRetry(
+        targetWsUrl,
+        async (conn) => {
+          await this.ensureEnabled(targetWsUrl);
 
-        if (payload.action === "click") {
-          const point = await this.preparePointerTarget(conn, payload);
-          await this.dispatchMouseClick(conn, point.x, point.y);
+          if (payload.action === "click") {
+            const point = await this.preparePointerTarget(conn, payload);
+            await this.dispatchMouseClick(conn, point.x, point.y);
 
-          try {
-            await conn.waitForEvent("Page.frameNavigated", 50);
             try {
-              await Promise.race([
-                conn.waitForEvent("Page.loadEventFired", 3000),
-                conn.waitForEvent("Page.frameStoppedLoading", 3000),
-              ]);
+              await conn.waitForEvent("Page.frameNavigated", 50);
+              try {
+                await Promise.race([
+                  conn.waitForEvent("Page.loadEventFired", 3000),
+                  conn.waitForEvent("Page.frameStoppedLoading", 3000),
+                ]);
+              } catch {
+                // load didn't fire in time — page may still be usable
+              }
             } catch {
-              // load didn't fire in time — page may still be usable
+              // No navigation happened – that's fine for non-navigating clicks
             }
-          } catch {
-            // No navigation happened – that's fine for non-navigating clicks
+
+            return "clicked";
           }
 
-          return "clicked";
-        }
+          if (payload.action === "hover") {
+            const point = await this.preparePointerTarget(conn, payload);
+            await conn.send("Input.dispatchMouseEvent", {
+              type: "mouseMoved",
+              x: point.x,
+              y: point.y,
+              button: "none",
+            });
+            return "hovered";
+          }
 
-        if (payload.action === "hover") {
-          const point = await this.preparePointerTarget(conn, payload);
-          await conn.send("Input.dispatchMouseEvent", {
-            type: "mouseMoved",
-            x: point.x,
-            y: point.y,
-            button: "none",
-          });
-          return "hovered";
-        }
+          if (payload.action === "press") {
+            await this.focusTarget(conn, payload);
+            await this.dispatchKeyPress(conn, payload.key);
+            return "pressed";
+          }
 
-        if (payload.action === "press") {
-          await this.focusTarget(conn, payload);
-          await this.dispatchKeyPress(conn, payload.key);
-          return "pressed";
-        }
-
-        const preparation = await this.prepareTypeTarget(conn, payload);
-        if (preparation === "ready") {
-          await conn.send("Input.insertText", { text: payload.text ?? "" });
-        }
-        return "typed";
-      });
+          const preparation = await this.prepareTypeTarget(conn, payload);
+          if (preparation === "ready") {
+            await conn.send("Input.insertText", { text: payload.text ?? "" });
+          }
+          return "typed";
+        },
+        "connection",
+      );
     }
 
     const expression = buildLocatorRuntimeExpression(
@@ -1665,15 +1852,21 @@ export class ChromeCdpBrowserController implements BrowserController {
 `,
     );
 
-    return await this.withRetry(targetWsUrl, async (conn) => {
-      await this.ensureEnabled(targetWsUrl);
-      const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
-        expression,
-        returnByValue: true,
-        awaitPromise: true,
-      });
-      return result.result.value ?? "";
-    });
+    // scroll/select/toggle mutate the page; retry only on a closed socket so a
+    // mid-flight drop can't re-apply the mutation.
+    return await this.withRetry(
+      targetWsUrl,
+      async (conn) => {
+        await this.ensureEnabled(targetWsUrl);
+        const result = await evaluateOnPage<string>(conn, {
+          expression,
+          returnByValue: true,
+          awaitPromise: true,
+        });
+        return result.result.value ?? "";
+      },
+      "connection",
+    );
   }
 
   async screenshot(targetWsUrl: string, options?: ScreenshotOptions): Promise<ScreenshotResult> {
@@ -1695,6 +1888,8 @@ export class ChromeCdpBrowserController implements BrowserController {
           height: metrics.contentSize.height,
           scale: 1,
         };
+        // Without this, Chrome only renders the visible viewport into the clip.
+        params.captureBeyondViewport = true;
       }
       const result = await conn.send<{ data: string }>("Page.captureScreenshot", params);
       return {
@@ -1706,7 +1901,7 @@ export class ChromeCdpBrowserController implements BrowserController {
 
   async getCurrentUrl(targetWsUrl: string): Promise<string> {
     return await this.withRetry(targetWsUrl, async (conn) => {
-      const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
+      const result = await evaluateOnPage<string>(conn, {
         expression: "window.location.href",
         returnByValue: true,
       });
@@ -1766,14 +1961,11 @@ export class ChromeCdpBrowserController implements BrowserController {
 
     return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
-      const result = await conn.send<{ result: { value?: RuntimeContentPayload } }>(
-        "Runtime.evaluate",
-        {
-          expression,
-          returnByValue: true,
-          awaitPromise: true,
-        },
-      );
+      const result = await evaluateOnPage<RuntimeContentPayload>(conn, {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      });
       const limited = normalizeRuntimeContentPayload(result.result.value, options.maxChars);
       return {
         mode: options.mode,
@@ -2038,14 +2230,11 @@ export class ChromeCdpBrowserController implements BrowserController {
 
     const pageSummary = await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
-      const result = await conn.send<{ result: { value?: Record<string, unknown> } }>(
-        "Runtime.evaluate",
-        {
-          expression,
-          returnByValue: true,
-          awaitPromise: true,
-        },
-      );
+      const result = await evaluateOnPage<Record<string, unknown>>(conn, {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      });
       return result.result.value ?? {};
     });
     const elements = await this.getInteractiveElements(targetWsUrl, {
@@ -2144,19 +2333,19 @@ export class ChromeCdpBrowserController implements BrowserController {
       let nodes: AccessibilityNode[];
       if (selector) {
         const objectGroup = "agentic-browser-a11y";
-        const selected = await conn.send<{ result: { objectId?: string; subtype?: string } }>(
-          "Runtime.evaluate",
-          {
-            expression: buildLocatorRuntimeExpression(
-              "selector",
-              selector,
-              `
+        const selected = await evaluateOnPage(conn, {
+          expression: buildLocatorRuntimeExpression(
+            "selector",
+            selector,
+            `
       return resolveLocator(selector);
 `,
-            ),
-            objectGroup,
-          },
-        );
+          ),
+          // The locator expression is an async IIFE — without awaitPromise the
+          // objectId would reference the pending Promise, not the element.
+          awaitPromise: true,
+          objectGroup,
+        });
         const objectId = selected.result.objectId;
         if (!objectId || selected.result.subtype === "null") {
           try {
@@ -2571,9 +2760,12 @@ export class ChromeCdpBrowserController implements BrowserController {
 
     return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
-      const result = await conn.send<{ result: { value?: unknown } }>("Runtime.evaluate", {
+      const result = await evaluateOnPage<unknown>(conn, {
         expression,
         returnByValue: true,
+        // The expression is an async IIFE — without awaitPromise the pending
+        // Promise serializes to {} and every call reports zero elements.
+        awaitPromise: true,
       });
       return extract(result);
     });
@@ -2819,6 +3011,28 @@ export class ChromeCdpBrowserController implements BrowserController {
         }
         return results;
       }
+      // Only click buttons that live inside something that looks like a consent
+      // banner: a dialog/modal, an element with consent-ish id/class, or a
+      // fixed/sticky overlay — AND whose container text actually talks about
+      // cookies/consent. Without this the loose text patterns above would click
+      // arbitrary page buttons ("Accept invitation", "I agree" form submits).
+      const containerTextPattern = /cookie|consent|privacy|gdpr|datenschutz|einwillig|zustimm|tracking|personal data|persönliche daten|données personnelles|datos personales/i;
+      function findBannerContainer(el) {
+        let node = el;
+        let depth = 0;
+        while (node && node.nodeType === 1 && depth < 20) {
+          const role = (node.getAttribute('role') || '').toLowerCase();
+          if (role === 'dialog' || role === 'alertdialog') return node;
+          if (node.getAttribute('aria-modal') === 'true') return node;
+          const idClass = (node.id + ' ' + (typeof node.className === 'string' ? node.className : '')).toLowerCase();
+          if (/cookie|consent|gdpr|cmp|privacy|datenschutz/.test(idClass)) return node;
+          const style = getComputedStyle(node);
+          if (style.position === 'fixed' || style.position === 'sticky') return node;
+          node = node.parentElement || (node.getRootNode && node.getRootNode().host) || null;
+          depth++;
+        }
+        return null;
+      }
       const candidates = collectButtons(document);
       for (const el of candidates) {
         if (!isVisible(el)) continue;
@@ -2826,6 +3040,10 @@ export class ChromeCdpBrowserController implements BrowserController {
         if (text.length > 60) continue;
         for (const pat of patterns) {
           if (pat.test(text)) {
+            const container = findBannerContainer(el);
+            if (!container) break;
+            const containerText = (container.textContent || '').slice(0, 4000);
+            if (!containerTextPattern.test(containerText)) break;
             el.click();
             return JSON.stringify({ dismissed: true, method: 'text', detail: text });
           }
@@ -2837,7 +3055,7 @@ export class ChromeCdpBrowserController implements BrowserController {
 
     return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
-      const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
+      const result = await evaluateOnPage<string>(conn, {
         expression,
         returnByValue: true,
       });
@@ -2924,7 +3142,7 @@ export class ChromeCdpBrowserController implements BrowserController {
 
     return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
-      const result = await conn.send<{ result: { value?: string } }>("Runtime.evaluate", {
+      const result = await evaluateOnPage<string>(conn, {
         expression,
         returnByValue: true,
       });
@@ -2960,8 +3178,10 @@ export class ChromeCdpBrowserController implements BrowserController {
       // Collect a11y nodes from the main frame
       const { nodes } = await conn.send<{ nodes: AXNode[] }>("Accessibility.getFullAXTree");
 
-      // Also collect from child frames (cross-origin iframes like Sourcepoint)
-      const allNodes: AXNode[] = [...nodes];
+      // Node sets by origin. Nodes from consent-related iframe URLs are trusted
+      // (the whole frame is a CMP); main-frame/about:blank nodes must additionally
+      // sit under a dialog/consent-named ancestor before we click anything.
+      const nodeSets: Array<{ nodes: AXNode[]; trusted: boolean }> = [{ nodes, trusted: false }];
       try {
         const { frameTree } = await conn.send<{
           frameTree: {
@@ -2971,19 +3191,18 @@ export class ChromeCdpBrowserController implements BrowserController {
         }>("Page.getFrameTree");
         for (const child of frameTree.childFrames ?? []) {
           const url = child.frame.url ?? "";
-          // Only query frames that look consent-related
-          if (
+          const consentFrame =
             /consent|cookie|privacy|sourcepoint|didomi|cmp|gdpr|trustarc|consentmanager|sp_message|onetrust|usercentrics|consent-cdn/i.test(
               url,
-            ) ||
-            url === "about:blank"
-          ) {
+            );
+          // Only query frames that look consent-related
+          if (consentFrame || url === "about:blank") {
             try {
               const frameResult = await conn.send<{ nodes: AXNode[] }>(
                 "Accessibility.getFullAXTree",
                 { frameId: child.frame.id },
               );
-              allNodes.push(...frameResult.nodes);
+              nodeSets.push({ nodes: frameResult.nodes, trusted: consentFrame });
             } catch {
               // frame may have been destroyed — skip
             }
@@ -3039,25 +3258,53 @@ export class ChromeCdpBrowserController implements BrowserController {
         /aksepter(\s+alle)?/i,
       ];
 
+      // Ancestor gate for untrusted node sets: the candidate must sit under a
+      // dialog/alertdialog or an ancestor whose accessible name mentions
+      // cookies/consent — otherwise the loose name patterns would click
+      // arbitrary page buttons ("Accept invitation", "I agree" form submits).
+      const consentAncestorName = /cookie|consent|privacy|gdpr|datenschutz|einwillig|zustimm/i;
+      const hasConsentAncestor = (byId: Map<string, AXNode>, node: AXNode): boolean => {
+        let current: AXNode | undefined = node.parentId ? byId.get(node.parentId) : undefined;
+        let depth = 0;
+        while (current && depth < 50) {
+          const role = current.role?.value;
+          if (role === "dialog" || role === "alertdialog") return true;
+          const name = current.name?.value;
+          if (name && consentAncestorName.test(name)) return true;
+          current = current.parentId ? byId.get(current.parentId) : undefined;
+          depth++;
+        }
+        return false;
+      };
+
       // Find button/link nodes whose accessible name matches consent patterns
       const candidates: Array<{ nodeId: string; backendDOMNodeId: number; name: string }> = [];
-      for (const node of allNodes) {
-        if (node.ignored) continue;
-        const role = node.role?.value;
-        if (role !== "button" && role !== "link") continue;
-        const name = node.name?.value?.trim();
-        if (!name || name.length > 50) continue;
+      for (const { nodes: setNodes, trusted } of nodeSets) {
+        const byId = new Map<string, AXNode>(setNodes.map((n) => [n.nodeId, n]));
+        for (const node of setNodes) {
+          if (node.ignored) continue;
+          const role = node.role?.value;
+          if (role !== "button" && role !== "link") continue;
+          const name = node.name?.value?.trim();
+          if (!name || name.length > 50) continue;
 
-        // Check if the button is focusable/not disabled
-        const isDisabled = node.properties?.some(
-          (p) => p.name === "disabled" && p.value.value === true,
-        );
-        if (isDisabled) continue;
+          // Check if the button is focusable/not disabled
+          const isDisabled = node.properties?.some(
+            (p) => p.name === "disabled" && p.value.value === true,
+          );
+          if (isDisabled) continue;
 
-        for (const pat of consentPatterns) {
-          if (pat.test(name) && node.backendDOMNodeId) {
-            candidates.push({ nodeId: node.nodeId, backendDOMNodeId: node.backendDOMNodeId, name });
-            break;
+          for (const pat of consentPatterns) {
+            if (pat.test(name) && node.backendDOMNodeId) {
+              if (trusted || hasConsentAncestor(byId, node)) {
+                candidates.push({
+                  nodeId: node.nodeId,
+                  backendDOMNodeId: node.backendDOMNodeId,
+                  name,
+                });
+              }
+              break;
+            }
           }
         }
       }

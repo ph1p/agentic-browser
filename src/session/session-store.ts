@@ -18,7 +18,6 @@ interface StoreState {
 
 export class SessionStore {
   private readonly filePath: string;
-  private cache: StoreState | null = null;
 
   constructor(baseDir: string) {
     fs.mkdirSync(baseDir, { recursive: true });
@@ -109,16 +108,31 @@ export class SessionStore {
     this.write(state);
   }
 
+  // Always read fresh from disk (never cache): the CLI and the MCP server are
+  // separate processes sharing this file, so a cached snapshot would clobber the
+  // other process's writes on the next whole-file write. These ops are
+  // low-frequency (session lifecycle), so the extra read is negligible.
   private read(): StoreState {
-    if (this.cache) {
-      return this.cache;
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.filePath, "utf8");
+    } catch (error) {
+      // Missing file is the expected first-run case — start empty. Any other
+      // read error (e.g. transient EACCES) must NOT destroy existing state.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { sessions: {} };
+      }
+      throw error;
     }
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as StoreState;
-      this.cache = parsed;
-      return parsed;
+      return JSON.parse(raw) as StoreState;
     } catch {
-      // Corrupted or unreadable — reset to empty state
+      // Genuinely unparseable content — back it up, then reset.
+      try {
+        fs.copyFileSync(this.filePath, `${this.filePath}.corrupt`);
+      } catch {
+        // best effort
+      }
       const empty: StoreState = { sessions: {} };
       this.write(empty);
       return empty;
@@ -126,7 +140,9 @@ export class SessionStore {
   }
 
   private write(state: StoreState): void {
-    this.cache = state;
-    fs.writeFileSync(this.filePath, JSON.stringify(state, null, 2), "utf8");
+    // Atomic write: a concurrent reader in another process never sees a torn file.
+    const tmp = `${this.filePath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8");
+    fs.renameSync(tmp, this.filePath);
   }
 }

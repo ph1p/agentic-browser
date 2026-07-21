@@ -140,8 +140,13 @@ export class MemoryService {
   verify(insightId: string): TaskInsight {
     const insight = this.inspect(insightId);
     const now = new Date().toISOString();
+    // Verification asserts the insight still works: restore full freshness and
+    // clear accumulated staleness strikes, otherwise a "verified" insight would
+    // stay down-ranked and one more strike would immediately re-stale it.
     const verified: TaskInsight = {
       ...insight,
+      freshness: "fresh",
+      staleStrikeCount: 0,
       lastVerifiedAt: now,
       updatedAt: now,
     };
@@ -204,6 +209,9 @@ export class MemoryService {
       };
       versioned = this.maybeGenerateAliases(versioned);
       this.store.upsert(versioned);
+      // Drop the stale predecessor — otherwise search would return both the
+      // ghost and its fresh replacement for the same intent+domain forever.
+      this.store.remove(matched.insightId);
       this.invalidateSearchCache();
       return versioned;
     }

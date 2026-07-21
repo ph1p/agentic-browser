@@ -63,12 +63,18 @@ function selectorSignal(insight: TaskInsight): number {
   return 0.7 * recipeCoverage + 0.3 * evidenceStrength;
 }
 
+interface ScoredInsight {
+  result: MemorySearchResult;
+  /** Intent-overlap strength (0 = no shared intent). Used to drop unrelated insights. */
+  intentSignal: number;
+}
+
 function scoreInsight(
   insight: TaskInsight,
   normalizedIntent: string,
   normalizedDomain: string | undefined,
   profileLookup?: (domain: string) => SiteProfile | undefined,
-): MemorySearchResult {
+): ScoredInsight {
   const insightIntent = normalize(insight.taskIntent);
   const intentMatch = insightIntent === normalizedIntent ? 1 : 0;
   const intentPartial =
@@ -77,6 +83,7 @@ function scoreInsight(
     normalizedIntent.includes(insightIntent)
       ? 0.65
       : 0;
+  const intentSignal = Math.max(intentMatch, intentPartial);
   const domainMatch =
     normalizedDomain && normalize(insight.siteDomain) === normalizedDomain
       ? 1
@@ -89,10 +96,7 @@ function scoreInsight(
   const selectorQuality = selectorSignal(insight);
 
   const score =
-    0.5 * Math.max(intentMatch, intentPartial) +
-    0.2 * domainMatch +
-    0.15 * reliability +
-    0.15 * selectorQuality;
+    0.5 * intentSignal + 0.2 * domainMatch + 0.15 * reliability + 0.15 * selectorQuality;
 
   const result: MemorySearchResult = {
     insightId: insight.insightId,
@@ -116,7 +120,7 @@ function scoreInsight(
     };
   }
 
-  return result;
+  return { result, intentSignal };
 }
 
 export class MemoryIndex {
@@ -160,26 +164,33 @@ export class MemoryIndex {
     // When a domain is specified, only score insights for that domain (O(bucket) not O(n)).
     const candidates = normalizedDomain ? (this.domainIndex.get(normalizedDomain) ?? []) : insights;
 
-    // Fast path: limit=1 with exact intent match — return immediately without sorting.
+    // Only return insights that share intent with the query — a domain match
+    // alone (score >= 0.2) is not enough, otherwise "buy shoes" would surface
+    // unrelated "login" insights for the same site.
+    const relevant = (scored: ScoredInsight): boolean => scored.intentSignal > 0;
+
+    // Fast path: limit=1 — pick the single best without allocating/sorting.
     if (limit === 1 && normalizedDomain) {
-      let best: MemorySearchResult | undefined;
+      let best: ScoredInsight | undefined;
       for (const insight of candidates) {
-        const result = scoreInsight(insight, normalizedIntent, normalizedDomain, profileLookup);
-        if (result.score > 0 && (!best || result.score > best.score)) {
-          best = result;
-          // Perfect score shortcut: exact intent (0.5) + domain (0.2) = 0.7 baseline.
-          // If score >= 0.95 we won't find anything better.
-          if (best.score >= 0.95) break;
+        const scored = scoreInsight(insight, normalizedIntent, normalizedDomain, profileLookup);
+        if (!relevant(scored)) continue;
+        if (!best || scored.result.score > best.result.score) {
+          best = scored;
+          // 1.0 is the maximum score (0.5 intent + 0.2 domain + 0.15 + 0.15) —
+          // nothing can beat it, so stop scanning.
+          if (best.result.score >= 1) break;
         }
       }
-      return best ? [best] : [];
+      return best ? [best.result] : [];
     }
 
     const ranked = candidates
       .map((insight) => scoreInsight(insight, normalizedIntent, normalizedDomain, profileLookup))
-      .filter((result) => result.score > 0)
-      .toSorted((a, b) => b.score - a.score)
-      .slice(0, limit);
+      .filter(relevant)
+      .toSorted((a, b) => b.result.score - a.result.score)
+      .slice(0, limit)
+      .map((scored) => scored.result);
 
     return ranked;
   }
