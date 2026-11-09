@@ -1,5 +1,6 @@
 import type {
   MemorySearchResult,
+  RecipeStepSummary,
   SelectorAlias,
   SiteProfile,
   TaskInsight,
@@ -13,6 +14,70 @@ interface SearchInput {
 
 function normalize(value: string): string {
   return value.trim().toLowerCase();
+}
+
+const STOPWORDS = new Set([
+  "a",
+  "an",
+  "the",
+  "to",
+  "on",
+  "in",
+  "of",
+  "and",
+  "or",
+  "for",
+  "with",
+  "at",
+  "my",
+  "from",
+  "by",
+  "into",
+]);
+
+/**
+ * Words of an intent, minus the site domain and filler words, with a trailing
+ * plural "s" dropped — so "open the newest stories" and "newest story" share
+ * tokens.
+ */
+function intentTokens(value: string, domain?: string): Set<string> {
+  let text = normalize(value);
+  if (domain) text = text.split(normalize(domain)).join(" ");
+  const tokens = new Set<string>();
+  for (const raw of text.split(/[^\p{L}\p{N}]+/u)) {
+    if (raw.length < 2 || STOPWORDS.has(raw)) continue;
+    tokens.add(raw.length > 3 && raw.endsWith("s") ? raw.slice(0, -1) : raw);
+  }
+  return tokens;
+}
+
+/** 0 = unrelated; 1 = identical intent. Word overlap covers rephrased queries. */
+function intentSimilarity(insight: TaskInsight, normalizedIntent: string): number {
+  const insightIntent = normalize(insight.taskIntent);
+  if (insightIntent === normalizedIntent) return 1;
+  if (insightIntent.includes(normalizedIntent) || normalizedIntent.includes(insightIntent)) {
+    return 0.65;
+  }
+  const query = intentTokens(normalizedIntent);
+  if (!query.size) return 0;
+  const stored = intentTokens(insightIntent, insight.siteDomain);
+  let shared = 0;
+  for (const token of query) if (stored.has(token)) shared += 1;
+  if (!shared) return 0;
+  // Share of the query's words that the stored intent covers, scaled to 0.3–0.8.
+  return 0.3 + 0.5 * (shared / query.size);
+}
+
+function buildRecipe(insight: TaskInsight): RecipeStepSummary[] {
+  return insight.actionRecipe.map((step) => {
+    const payload = step.payload ?? {};
+    const action = typeof payload.action === "string" ? payload.action : step.type;
+    const summary: RecipeStepSummary = { action };
+    if (step.selector) summary.selector = step.selector;
+    if (typeof payload.url === "string") summary.url = payload.url;
+    if (payload.redacted === true) summary.needsInput = true;
+    return summary;
+  });
 }
 
 function freshnessWeight(freshness: TaskInsight["freshness"]): number {
@@ -75,15 +140,7 @@ function scoreInsight(
   normalizedDomain: string | undefined,
   profileLookup?: (domain: string) => SiteProfile | undefined,
 ): ScoredInsight {
-  const insightIntent = normalize(insight.taskIntent);
-  const intentMatch = insightIntent === normalizedIntent ? 1 : 0;
-  const intentPartial =
-    intentMatch === 1 ||
-    insightIntent.includes(normalizedIntent) ||
-    normalizedIntent.includes(insightIntent)
-      ? 0.65
-      : 0;
-  const intentSignal = Math.max(intentMatch, intentPartial);
+  const intentSignal = intentSimilarity(insight, normalizedIntent);
   const domainMatch =
     normalizedDomain && normalize(insight.siteDomain) === normalizedDomain
       ? 1
@@ -105,6 +162,7 @@ function scoreInsight(
     confidence: insight.confidence,
     freshness: insight.freshness,
     lastVerifiedAt: insight.lastVerifiedAt,
+    recipe: buildRecipe(insight),
     selectorHints: buildSelectorHints(insight),
     selectorAliases: buildSelectorAliases(insight),
     score,

@@ -59,6 +59,7 @@ class RecordingBrowserController extends CookieMockBrowserController {
   elementOptions: InteractiveElementsOptions[] = [];
   /** Raw in-page eval output; the real controller always JSON-encodes it. */
   evalOutput = JSON.stringify({ answer: 42 });
+  elements: InteractiveElementsResult["elements"] = [];
 
   override async interact(cdpUrl: string, payload: InteractPayload): Promise<string> {
     this.payloads.push(payload);
@@ -71,6 +72,9 @@ class RecordingBrowserController extends CookieMockBrowserController {
     options: InteractiveElementsOptions,
   ): Promise<InteractiveElementsResult> {
     this.elementOptions.push(options);
+    if (this.elements.length > 0) {
+      return { elements: this.elements, totalFound: this.elements.length, truncated: false };
+    }
     return super.getInteractiveElements(targetWsUrl, options);
   }
 }
@@ -235,6 +239,38 @@ describe("agent commands", () => {
       text: "gta",
       frame: "iframe#x",
     });
+  });
+
+  it("agent elements assigns refs that click resolves until the next navigate", async () => {
+    const { runtime, browser } = makeRecordingRuntime();
+    browser.elements = [
+      { selector: "#a", role: "link", text: "A", enabled: true },
+      {
+        selector: "#b",
+        role: "button",
+        text: "B",
+        enabled: true,
+        fallbackSelectors: ["button.b"],
+      },
+    ] as InteractiveElementsResult["elements"];
+    await agentStart(runtime);
+    await agentNavigate(runtime, { url: "https://example.com" });
+
+    const listed = await agentElements(runtime, { frame: "iframe#x" });
+    expect(listed.elements.map((element) => element.ref)).toEqual(["e1", "e2"]);
+
+    await agentInteract(runtime, { action: "click", selector: "e2", intent: "press b" });
+    expect(browser.payloads.at(-1)).toMatchObject({
+      action: "click",
+      selector: "#b",
+      fallbackSelectors: ["button.b"],
+      frame: "iframe#x",
+    });
+
+    await agentNavigate(runtime, { url: "https://example.com/next" });
+    await expect(agentInteract(runtime, { action: "click", selector: "@e1" })).rejects.toThrow(
+      'Unknown or stale ref "@e1"',
+    );
   });
 
   it("matchesUrlPattern supports substring, glob and regex", () => {

@@ -128,7 +128,8 @@ agentic-browser agent elements
 agentic-browser agent elements --roles button,link --limit 20
 agentic-browser agent elements --href /news/ --text "gta"
 agentic-browser agent screenshot --out ./page.png --full-page
-agentic-browser agent memory-search "navigate:example.com" --domain example.com
+agentic-browser agent click e3 --intent "open top story"
+agentic-browser agent memory-search "open the top story" --domain example.com
 agentic-browser agent stop
 agentic-browser agent cleanup --dry-run --max-age-days 7
 ```
@@ -143,7 +144,7 @@ agentic-browser agent elements --roles button,link,input --visible-only --limit 
 agentic-browser agent elements --selector "#main-content"
 ```
 
-Returns a JSON array of elements with selectors and fallback selectors usable in the typed agent commands like `agent click`, `agent type`, and `agent select`:
+Returns a JSON array of elements with selectors and fallback selectors usable in the typed agent commands like `agent click`, `agent type`, and `agent select`. Main-content elements come first; header, nav and footer links come last. Each element also gets a short ref (`e1`, `e2`, ...): `agent click e3` resolves it to the stored selector. Refs are valid until the next `agent navigate`:
 
 ```json
 {
@@ -274,9 +275,9 @@ agentic-browser memory:stats
 
 1. `agent start` — launch Chrome and persist session.
 2. `agent elements` — discover what's on the page.
-3. `agent navigate`, `agent click`, `agent type`, `agent select`, and related typed commands — execute actions using discovered selectors.
+3. `agent navigate`, `agent click`, `agent type`, `agent select`, and related typed commands — execute actions using element refs or selectors. Pass `--intent "<task>"` to group the steps of one task in memory.
 4. `agent content` — read page content after actions.
-5. `agent memory-search` — reuse known selectors for repeated tasks.
+5. `agent memory-search "<task>"` — matching is fuzzy; results include a `recipe` with the steps that worked last time (`needsInput` marks typed text that was redacted).
 6. `agent stop` — terminate when done.
 
 ## Anti-Detection

@@ -3084,6 +3084,12 @@ export class ChromeCdpBrowserController implements BrowserController {
           }
           current = parent;
         }
+        // Prefer the shortest unique tail of the path: long nth-of-type chains
+        // cost tokens and break on the slightest layout change.
+        for (let size = 1; size < parts.length; size += 1) {
+          const candidate = tryUniqueSelector(root, parts.slice(-size).join(' > '));
+          if (candidate) return candidate;
+        }
         return parts.join(' > ');
       }
 
@@ -3242,7 +3248,7 @@ export class ChromeCdpBrowserController implements BrowserController {
         return [root];
       }
 
-      const results = [];
+      const candidates = [];
       const crossOriginFrames = [];
       let totalFound = 0;
 
@@ -3281,8 +3287,22 @@ export class ChromeCdpBrowserController implements BrowserController {
         }
 
         totalFound += 1;
-        if (results.length >= limit) return;
+        candidates.push({ root, path, el, role, visible, rank: rankElement(el, visible), order: candidates.length });
+      }
 
+      // Lower rank sorts first: main content, then the rest of the page, then
+      // site chrome (header, nav, footer), then hidden elements. Ties keep
+      // document order.
+      function rankElement(el, visible) {
+        if (!visible) return 3;
+        if (el.closest('footer, [role="contentinfo"]')) return 2;
+        if (el.closest('main, [role="main"], article')) return 0;
+        if (el.closest('header, nav, [role="banner"], [role="navigation"]')) return 2;
+        return 1;
+      }
+
+      function buildEntry(candidate) {
+        const { root, path, el, role, visible } = candidate;
         const selector = composeLocator(path, buildSelector(root, el));
         const entry = {
           selector,
@@ -3307,13 +3327,15 @@ export class ChromeCdpBrowserController implements BrowserController {
           entry.currentValue = el.value.slice(0, 200);
         }
 
-        results.push(entry);
+        return entry;
       }
 
+      // Depth-first in document order, so a capped listing follows reading
+      // order instead of favouring shallow page chrome.
       function walkRoot(root, path) {
-        const queue = rootEntries(root).slice();
-        while (queue.length) {
-          const current = queue.shift();
+        const stack = rootEntries(root).slice().reverse();
+        while (stack.length) {
+          const current = stack.pop();
           if (!current || current.nodeType !== 1) continue;
 
           maybeRecordElement(root, path, current);
@@ -3341,13 +3363,16 @@ export class ChromeCdpBrowserController implements BrowserController {
             }
           }
 
-          for (const child of Array.from(current.children)) {
-            queue.push(child);
+          const children = current.children;
+          for (let i = children.length - 1; i >= 0; i -= 1) {
+            stack.push(children[i]);
           }
         }
       }
 
       walkRoot(document, []);
+      candidates.sort((a, b) => a.rank - b.rank || a.order - b.order);
+      const results = candidates.slice(0, limit).map(buildEntry);
       const output = { elements: results, totalFound, truncated: totalFound > results.length };
       if (crossOriginFrames.length) output.crossOriginFrames = crossOriginFrames;
       return output;
@@ -3455,7 +3480,7 @@ export class ChromeCdpBrowserController implements BrowserController {
       dismissed: false,
       detail: notes.size
         ? [...notes].join("; ")
-        : "no consent banner or accept button found (page, consent iframes, a11y tree)",
+        : "no consent banner found on the page, in consent iframes or the a11y tree (it may already be dismissed)",
     };
   }
 
@@ -3773,10 +3798,44 @@ export class ChromeCdpBrowserController implements BrowserController {
         'iframe[src*="consentmanager"]',
       ];
 
+      const AD_HOSTS = ['doubleclick.net', 'googlesyndication.com', 'googleadservices.com', 'adservice.google.'];
+      function isAdFrame(iframe) {
+        const id = iframe.id || '';
+        if (id.startsWith('goog_') || id.startsWith('google_ads_iframe')) return true;
+        const src = iframe.src || '';
+        return AD_HOSTS.some((host) => src.includes(host));
+      }
+      function isShown(iframe) {
+        const rect = iframe.getBoundingClientRect();
+        if (rect.width < 2 || rect.height < 2) return false;
+        const style = getComputedStyle(iframe);
+        return style.display !== 'none' && style.visibility !== 'hidden';
+      }
+      // A src keyword must sit in host or path: ad and tracking frames often
+      // carry "cookie=" or "privacy=" in their query string.
+      function srcKeywordMatches(iframe, sel) {
+        const prefix = 'iframe[src*="';
+        if (!sel.startsWith(prefix)) return true;
+        const keyword = sel.slice(prefix.length, sel.indexOf('"', prefix.length));
+        try {
+          const url = new URL(iframe.src, location.href);
+          return (url.hostname + url.pathname).toLowerCase().includes(keyword);
+        } catch {
+          return false;
+        }
+      }
+      function findFrame(sel) {
+        for (const iframe of document.querySelectorAll(sel)) {
+          if (isAdFrame(iframe) || !isShown(iframe) || !srcKeywordMatches(iframe, sel)) continue;
+          return iframe;
+        }
+        return null;
+      }
+
       // Cross-origin consent frames are handed back so the caller can attach to them.
       const crossOrigin = [];
       for (const sel of iframeSelectors) {
-        const iframe = document.querySelector(sel);
+        const iframe = findFrame(sel);
         if (!iframe) continue;
         let doc = null;
         try {
