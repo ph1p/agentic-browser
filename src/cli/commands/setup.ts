@@ -31,11 +31,21 @@ export function detectTools(cwd: string = process.cwd()): ToolTarget[] {
 
 export function readJsonFile(filePath: string): McpConfig {
   if (!fs.existsSync(filePath)) return {};
+  let parsed: unknown;
   try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as McpConfig;
-  } catch {
-    return {};
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (err) {
+    throw new Error(
+      `Cannot parse ${filePath}: ${(err as Error).message}. Fix or remove the file, then re-run setup.`,
+      { cause: err },
+    );
   }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      `Cannot parse ${filePath}: expected a JSON object. Fix or remove the file, then re-run setup.`,
+    );
+  }
+  return parsed as McpConfig;
 }
 
 export function writeJsonFile(filePath: string, data: McpConfig): void {
@@ -77,10 +87,17 @@ export async function runSetup(): Promise<void> {
 
     const selected = choice === targets.length + 1 ? targets : [targets[choice - 1]];
     console.log();
+    let failed = 0;
     for (const target of selected) {
-      applyConfig(target);
-      console.log(`  Configured ${target.configPath}`);
+      try {
+        applyConfig(target);
+        console.log(`  Configured ${target.configPath}`);
+      } catch (err) {
+        failed++;
+        process.stderr.write(`  Skipped ${target.name}: ${(err as Error).message}\n`);
+      }
     }
+    if (failed > 0) process.exitCode = 1;
     console.log("\nDone. Restart your AI tool to pick up the new MCP server.");
   } finally {
     rl.close();

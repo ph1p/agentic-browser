@@ -48,10 +48,10 @@ describe("readJsonFile", () => {
     expect(readJsonFile(filePath)).toEqual({ foo: "bar" });
   });
 
-  it("returns empty object for invalid JSON", () => {
+  it("throws on invalid JSON", () => {
     const filePath = path.join(tmpBase, "bad.json");
     fs.writeFileSync(filePath, "not json");
-    expect(readJsonFile(filePath)).toEqual({});
+    expect(() => readJsonFile(filePath)).toThrow(/Cannot parse/);
   });
 });
 
@@ -110,5 +110,22 @@ describe("applyConfig", () => {
 
     const result = JSON.parse(fs.readFileSync(configPath, "utf8"));
     expect(result.mcpServers["agentic-browser"]).toEqual(SERVER_ENTRY);
+  });
+
+  it("throws and leaves file untouched on unparseable JSON", () => {
+    const configPath = path.join(tmpBase, ".mcp.json");
+    const original = '{ "mcpServers": { "other": {} }, }';
+    fs.writeFileSync(configPath, original);
+
+    expect(() => applyConfig({ name: "Test", configPath })).toThrow(/Cannot parse/);
+    expect(fs.readFileSync(configPath, "utf8")).toBe(original);
+  });
+
+  it("throws on non-object JSON", () => {
+    const configPath = path.join(tmpBase, ".mcp.json");
+    fs.writeFileSync(configPath, "[]");
+
+    expect(() => applyConfig({ name: "Test", configPath })).toThrow(/Cannot parse/);
+    expect(fs.readFileSync(configPath, "utf8")).toBe("[]");
   });
 });
