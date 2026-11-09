@@ -30,6 +30,14 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
+      - name: Check formatting
+        if: matrix.node-version == 22 && matrix.os == 'ubuntu-latest'
+        run: pnpm format:check
+
+      - name: Build docs
+        if: matrix.node-version == 22 && matrix.os == 'ubuntu-latest'
+        run: pnpm docs:build
+
       - uses: actions/upload-artifact@v4
         if: matrix.node-version == 22 && matrix.os == 'ubuntu-latest'
         with:
