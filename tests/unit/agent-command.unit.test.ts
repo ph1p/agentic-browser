@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createAgenticBrowserCore } from "../../src/cli/runtime.js";
+import { createAgenticBrowserCore, type AgenticBrowserCore } from "../../src/cli/runtime.js";
 import { agentNavigate, agentStart } from "../../src/cli/commands/agent.js";
 import {
   MockBrowserController,
@@ -12,6 +12,7 @@ import {
 } from "../../src/session/browser-controller.js";
 
 const tempDirs: string[] = [];
+const cores: AgenticBrowserCore[] = [];
 
 class CookieMockBrowserController extends MockBrowserController {
   override async dismissCookieBanner(): Promise<DismissCookieBannerResult> {
@@ -22,16 +23,19 @@ class CookieMockBrowserController extends MockBrowserController {
 function makeRuntime() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentic-browser-agent-"));
   tempDirs.push(dir);
-  return createAgenticBrowserCore({
+  const core = createAgenticBrowserCore({
     env: {
       ...process.env,
       AGENTIC_BROWSER_DIR: dir,
     },
     browserController: new CookieMockBrowserController(),
   });
+  cores.push(core);
+  return core;
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(cores.splice(0).map((core) => core.dispose()));
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }

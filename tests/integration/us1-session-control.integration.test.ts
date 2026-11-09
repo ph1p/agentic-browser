@@ -4,7 +4,7 @@ import { runSessionStart } from "../../src/cli/commands/session-start.js";
 import { runSessionStatus } from "../../src/cli/commands/session-status.js";
 import { runCommand } from "../../src/cli/commands/command-run.js";
 import { runSessionStop } from "../../src/cli/commands/session-stop.js";
-import { createDefaultRuntime } from "../../src/cli/runtime.js";
+import { createDefaultRuntime } from "../helpers/runtime.js";
 
 describe("US1 integration: start -> navigate -> terminate", () => {
   it("runs full journey with deterministic outputs", async () => {

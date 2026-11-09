@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createDefaultRuntime } from "../../src/cli/runtime.js";
+import { createDefaultRuntime } from "../helpers/runtime.js";
 import { runSessionCleanup } from "../../src/cli/commands/session-cleanup.js";
 import { runSessionStart } from "../../src/cli/commands/session-start.js";
 import { runSessionStatus } from "../../src/cli/commands/session-status.js";
