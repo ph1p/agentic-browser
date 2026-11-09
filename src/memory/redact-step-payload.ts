@@ -10,6 +10,7 @@ const ALLOWED_KEYS = new Set([
   "scrollX",
   "scrollY",
   "timeoutMs",
+  "redacted",
 ]);
 
 function stripUrl(rawUrl: string): string | undefined {

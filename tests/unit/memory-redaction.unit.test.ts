@@ -58,6 +58,18 @@ describe("redactStepPayload", () => {
     expect(redactStepPayload({ url: "not a url" })).toEqual({});
   });
 
+  it("is idempotent", () => {
+    const payload = {
+      action: "type",
+      selector: "#a",
+      text: "hunter2",
+      url: "https://example.com/p?token=abc#x",
+    };
+    const once = redactStepPayload(payload);
+    expect(once.redacted).toBe(true);
+    expect(redactStepPayload(once)).toEqual(once);
+  });
+
   it("drops unknown keys such as expression", () => {
     expect(redactStepPayload({ action: "click", expression: "document.cookie" })).toEqual({
       action: "click",
