@@ -25,6 +25,7 @@ export class ControlApi {
       commandId: string;
       type: "navigate" | "interact" | "restart" | "terminate";
       payload: Record<string, unknown>;
+      intent?: string;
     },
   ) {
     return await this.sessions.executeCommand(sessionId, input);

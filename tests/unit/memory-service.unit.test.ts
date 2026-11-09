@@ -64,3 +64,35 @@ describe("MemoryService exact match selection", () => {
     expect(failed?.failureCount).toBe(1);
   });
 });
+
+describe("MemoryService per-run recipes", () => {
+  function step(service: MemoryService, runId: string, selector: string) {
+    return service.recordSuccess({
+      commandId: `cmd-${runId}-${selector}`,
+      runId,
+      taskIntent: "open top story",
+      siteDomain: "example.com",
+      sitePathPattern: "/",
+      expectedOutcome: "clicked",
+      selector,
+      step: { type: "interact", summary: `click ${selector}`, selector, payload: {} },
+    });
+  }
+
+  it("keeps the steps of one run in order, repeats included", () => {
+    const service = createService();
+    step(service, "run-1", "#menu");
+    step(service, "run-1", "#story");
+    const last = step(service, "run-1", "#menu");
+    expect(last.actionRecipe.map((s) => s.selector)).toEqual(["#menu", "#story", "#menu"]);
+  });
+
+  it("starts the recipe over when a new run records a step", () => {
+    const service = createService();
+    step(service, "run-1", "#menu");
+    step(service, "run-1", "#story");
+    const latest = step(service, "run-2", "#story-v2");
+    expect(latest.actionRecipe.map((s) => s.selector)).toEqual(["#story-v2"]);
+    expect(latest.recipeRunId).toBe("run-2");
+  });
+});

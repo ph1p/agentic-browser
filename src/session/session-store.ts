@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { Session } from "../lib/domain-schemas.js";
 import { ensurePrivateDir, writePrivateFileSync } from "../lib/secure-fs.js";
+import type { StoredRefs } from "./element-refs.js";
 
 export interface StoredSessionRecord {
   session: Session;
@@ -10,6 +11,13 @@ export interface StoredSessionRecord {
   targetWsUrl: string;
   pid: number;
   lastUrl?: string;
+  /** Element refs from the last element listing. */
+  refs?: StoredRefs;
+  /**
+   * The task run in progress: consecutive commands with the same explicit
+   * intent share `runId`, so memory can rebuild that task's recipe per run.
+   */
+  intentRun?: { intent: string; runId: string };
 }
 
 interface StoreState {
@@ -76,12 +84,20 @@ export class SessionStore {
   }
 
   setLastUrl(sessionId: string, lastUrl: string): void {
+    this.update(sessionId, { lastUrl });
+  }
+
+  /** Merge fields into a stored record; `undefined` values clear the field. */
+  update(
+    sessionId: string,
+    patch: Partial<Pick<StoredSessionRecord, "lastUrl" | "refs" | "intentRun">>,
+  ): void {
     const state = this.read();
     const existing = state.sessions[sessionId];
     if (!existing) {
       throw new Error("Session not found in store");
     }
-    state.sessions[sessionId] = { ...existing, lastUrl };
+    state.sessions[sessionId] = { ...existing, ...patch };
     this.write(state);
   }
 

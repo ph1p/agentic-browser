@@ -52,13 +52,16 @@ function intentTokens(value: string, domain?: string): Set<string> {
 }
 
 /** 0 = unrelated; 1 = identical intent. Word overlap covers rephrased queries. */
-function intentSimilarity(insight: TaskInsight, normalizedIntent: string): number {
+function intentSimilarity(
+  insight: TaskInsight,
+  normalizedIntent: string,
+  query: Set<string>,
+): number {
   const insightIntent = normalize(insight.taskIntent);
   if (insightIntent === normalizedIntent) return 1;
   if (insightIntent.includes(normalizedIntent) || normalizedIntent.includes(insightIntent)) {
     return 0.65;
   }
-  const query = intentTokens(normalizedIntent);
   if (!query.size) return 0;
   const stored = intentTokens(insightIntent, insight.siteDomain);
   let shared = 0;
@@ -129,7 +132,8 @@ function selectorSignal(insight: TaskInsight): number {
 }
 
 interface ScoredInsight {
-  result: MemorySearchResult;
+  insight: TaskInsight;
+  score: number;
   /** Intent-overlap strength (0 = no shared intent). Used to drop unrelated insights. */
   intentSignal: number;
 }
@@ -137,10 +141,10 @@ interface ScoredInsight {
 function scoreInsight(
   insight: TaskInsight,
   normalizedIntent: string,
+  queryTokens: Set<string>,
   normalizedDomain: string | undefined,
-  profileLookup?: (domain: string) => SiteProfile | undefined,
 ): ScoredInsight {
-  const intentSignal = intentSimilarity(insight, normalizedIntent);
+  const intentSignal = intentSimilarity(insight, normalizedIntent, queryTokens);
   const domainMatch =
     normalizedDomain && normalize(insight.siteDomain) === normalizedDomain
       ? 1
@@ -155,6 +159,14 @@ function scoreInsight(
   const score =
     0.5 * intentSignal + 0.2 * domainMatch + 0.15 * reliability + 0.15 * selectorQuality;
 
+  return { insight, score, intentSignal };
+}
+
+/** Builds the full result (recipe, hints, profile) — only for insights that are returned. */
+function toSearchResult(
+  { insight, score }: ScoredInsight,
+  profileLookup?: (domain: string) => SiteProfile | undefined,
+): MemorySearchResult {
   const result: MemorySearchResult = {
     insightId: insight.insightId,
     taskIntent: insight.taskIntent,
@@ -178,7 +190,7 @@ function scoreInsight(
     };
   }
 
-  return { result, intentSignal };
+  return result;
 }
 
 export class MemoryIndex {
@@ -214,6 +226,7 @@ export class MemoryIndex {
     profileLookup?: (domain: string) => SiteProfile | undefined,
   ): MemorySearchResult[] {
     const normalizedIntent = normalize(input.taskIntent);
+    const queryTokens = intentTokens(normalizedIntent);
     const normalizedDomain = input.siteDomain ? normalize(input.siteDomain) : undefined;
     const limit = input.limit ?? 10;
 
@@ -231,24 +244,24 @@ export class MemoryIndex {
     if (limit === 1 && normalizedDomain) {
       let best: ScoredInsight | undefined;
       for (const insight of candidates) {
-        const scored = scoreInsight(insight, normalizedIntent, normalizedDomain, profileLookup);
+        const scored = scoreInsight(insight, normalizedIntent, queryTokens, normalizedDomain);
         if (!relevant(scored)) continue;
-        if (!best || scored.result.score > best.result.score) {
+        if (!best || scored.score > best.score) {
           best = scored;
           // 1.0 is the maximum score (0.5 intent + 0.2 domain + 0.15 + 0.15) —
           // nothing can beat it, so stop scanning.
-          if (best.result.score >= 1) break;
+          if (best.score >= 1) break;
         }
       }
-      return best ? [best.result] : [];
+      return best ? [toSearchResult(best, profileLookup)] : [];
     }
 
     const ranked = candidates
-      .map((insight) => scoreInsight(insight, normalizedIntent, normalizedDomain, profileLookup))
+      .map((insight) => scoreInsight(insight, normalizedIntent, queryTokens, normalizedDomain))
       .filter(relevant)
-      .toSorted((a, b) => b.result.score - a.result.score)
+      .toSorted((a, b) => b.score - a.score)
       .slice(0, limit)
-      .map((scored) => scored.result);
+      .map((scored) => toSearchResult(scored, profileLookup));
 
     return ranked;
   }

@@ -21,6 +21,7 @@ import {
   type PageState,
   type TabInfo,
 } from "./browser-controller.js";
+import { assignRefs, REF_PATTERN, StaleRefError } from "./element-refs.js";
 import { SessionStore, type StoredSessionRecord } from "./session-store.js";
 import { assertNavigableUrl } from "./url-policy.js";
 import type { TaskStep } from "../memory/memory-schemas.js";
@@ -34,6 +35,8 @@ interface ExecuteCommandInput {
   commandId: string;
   type: CommandType;
   payload: Record<string, unknown>;
+  /** Task this step belongs to (e.g. "log in"); memory groups steps by it. */
+  intent?: string;
 }
 
 interface CleanupInput {
@@ -148,8 +151,14 @@ export class SessionManager {
     throw new Error("Session is terminated. Start a new session.");
   }
 
-  async executeCommand(sessionId: string, input: ExecuteCommandInput): Promise<Command> {
+  async executeCommand(sessionId: string, rawInput: ExecuteCommandInput): Promise<Command> {
     const record = await this.ensureSession(sessionId);
+    // A ref ("e3") stands for the selector stored by the last element listing.
+    const input =
+      rawInput.type === "interact"
+        ? { ...rawInput, payload: await this.resolveRef(record, rawInput.payload) }
+        : rawInput;
+    const runId = this.trackIntentRun(sessionId, record, input);
 
     const command: Command = {
       commandId: input.commandId,
@@ -198,6 +207,11 @@ export class SessionManager {
           parsedPayload.data as InteractPayload,
         );
         resultMessage = `Interaction result: ${interactionResult}`;
+        // Clicks and key presses can navigate; keep lastUrl (memory domain/path) current.
+        const currentUrl = await this.browser
+          .getCurrentUrl(record.targetWsUrl)
+          .catch(() => undefined);
+        if (currentUrl) this.store.setLastUrl(sessionId, currentUrl);
       } else if (input.type === "restart") {
         await this.restartSession(sessionId);
         resultMessage = "Session restarted";
@@ -236,6 +250,7 @@ export class SessionManager {
         step: memoryContext.step,
         selector: memoryContext.selector,
         url: memoryContext.url,
+        runId,
       });
     } else {
       this.ctx.memoryService.recordFailure(
@@ -283,9 +298,14 @@ export class SessionManager {
     return result;
   }
 
+  /** Lists interactive elements and assigns fresh refs (e1, e2, …) for this page. */
   async getInteractiveElements(sessionId: string, options: InteractiveElementsOptions) {
     const record = await this.ensureSession(sessionId);
-    return await this.browser.getInteractiveElements(record.targetWsUrl, options);
+    const result = await this.browser.getInteractiveElements(record.targetWsUrl, options);
+    const { elements, byRef } = assignRefs(result.elements, options.frame);
+    const url = await this.browser.getCurrentUrl(record.targetWsUrl).catch(() => undefined);
+    this.store.update(sessionId, { refs: { url, byRef } });
+    return { ...result, elements };
   }
 
   async screenshot(
@@ -451,11 +471,14 @@ export class SessionManager {
       endedAt: undefined,
     };
 
+    // Refs and lastUrl belonged to the old page; the task run survives a
+    // restart so an auto-retried step stays part of it.
     this.store.save({
       session: restarted,
       cdpUrl: relaunched.cdpUrl,
       targetWsUrl: relaunched.targetWsUrl,
       pid: relaunched.pid,
+      intentRun: record.intentRun,
     });
 
     this.recordEvent(sessionId, "lifecycle", "info", "Session restarted");
@@ -685,10 +708,7 @@ export class SessionManager {
         : input.type === "interact"
           ? `interact:${action ?? "action"}:${parsed.domain}`
           : `${input.type}:${parsed.domain}`;
-    const taskIntent =
-      typeof input.payload.intent === "string" && input.payload.intent.trim()
-        ? input.payload.intent
-        : defaultIntent;
+    const taskIntent = explicitIntent(input) ?? defaultIntent;
     const expectedOutcome =
       typeof input.payload.expectedOutcome === "string" && input.payload.expectedOutcome.trim()
         ? input.payload.expectedOutcome
@@ -715,6 +735,44 @@ export class SessionManager {
     };
   }
 
+  private async resolveRef(
+    record: StoredSessionRecord,
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const selector = typeof payload.selector === "string" ? payload.selector : undefined;
+    const ref = selector ? REF_PATTERN.exec(selector)?.[1] : undefined;
+    if (!selector || !ref) return payload;
+    const { refs } = record;
+    const stored = refs?.byRef[ref];
+    const onSamePage =
+      !refs?.url ||
+      (await this.browser.getCurrentUrl(record.targetWsUrl).catch(() => undefined)) === refs.url;
+    if (!stored || !onSamePage) throw new StaleRefError(selector);
+    const extra = Array.isArray(payload.fallbackSelectors) ? payload.fallbackSelectors : [];
+    return {
+      ...payload,
+      selector: stored.selector,
+      fallbackSelectors: [...(stored.fallbackSelectors ?? []), ...extra],
+      frame: payload.frame ?? stored.frame,
+    };
+  }
+
+  /**
+   * Consecutive commands with the same explicit intent form one run; any other
+   * command ends it. Commands without an intent are each their own run.
+   */
+  private trackIntentRun(
+    sessionId: string,
+    record: StoredSessionRecord,
+    input: ExecuteCommandInput,
+  ): string {
+    const intent = explicitIntent(input);
+    if (intent && record.intentRun?.intent === intent) return record.intentRun.runId;
+    const intentRun = intent ? { intent, runId: input.commandId } : undefined;
+    if (intentRun || record.intentRun) this.store.update(sessionId, { intentRun });
+    return input.commandId;
+  }
+
   private parseUrl(rawUrl?: string): { domain: string; pathPattern: string } {
     if (!rawUrl) {
       return { domain: "unknown", pathPattern: "/" };
@@ -723,9 +781,17 @@ export class SessionManager {
       const parsed = new URL(rawUrl);
       const firstSegment = parsed.pathname.split("/").filter(Boolean)[0];
       const pathPattern = firstSegment ? `/${firstSegment}/*` : "/";
-      return { domain: parsed.hostname.toLowerCase(), pathPattern };
+      // file: and about: URLs have no hostname; memory needs a non-empty domain.
+      const domain = parsed.hostname.toLowerCase() || parsed.protocol.replace(/:$/, "");
+      return { domain, pathPattern };
     } catch {
       return { domain: "unknown", pathPattern: "/" };
     }
   }
+}
+
+/** The caller's task intent, if any. payload.intent is the older spelling, still honored. */
+function explicitIntent(input: ExecuteCommandInput): string | undefined {
+  const raw = input.intent ?? input.payload.intent;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
 }

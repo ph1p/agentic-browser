@@ -31,6 +31,8 @@ export const TaskInsightSchema = z.object({
   siteDomain: z.string().min(1),
   sitePathPattern: z.string().min(1),
   actionRecipe: z.array(TaskStepSchema),
+  /** Run that produced actionRecipe; steps from another run start it over. */
+  recipeRunId: z.string().optional(),
   expectedOutcome: z.string().min(1),
   confidence: z.number().min(0).max(1),
   successCount: z.number().int().nonnegative(),
