@@ -57,10 +57,12 @@ class FailingBrowserController extends MockBrowserController {
 class RecordingBrowserController extends CookieMockBrowserController {
   payloads: InteractPayload[] = [];
   elementOptions: InteractiveElementsOptions[] = [];
+  /** Raw in-page eval output; the real controller always JSON-encodes it. */
+  evalOutput = JSON.stringify({ answer: 42 });
 
   override async interact(cdpUrl: string, payload: InteractPayload): Promise<string> {
     this.payloads.push(payload);
-    if (payload.action === "evaluate") return JSON.stringify({ answer: 42 });
+    if (payload.action === "evaluate") return this.evalOutput;
     return super.interact(cdpUrl, payload);
   }
 
@@ -210,6 +212,18 @@ describe("agent commands", () => {
       text: "({answer: 42})",
       frame: "#f",
     });
+  });
+
+  it("agent eval keeps string results as strings", async () => {
+    const { runtime, browser } = makeRecordingRuntime();
+    await agentStart(runtime);
+    for (const value of ["", "42", "true", "null", "hello"]) {
+      browser.evalOutput = JSON.stringify(value);
+      const result = await agentEval(runtime, { expression: "x" });
+      expect(result.result).toBe(value);
+    }
+    browser.evalOutput = "undefined";
+    expect((await agentEval(runtime, { expression: "x" })).result).toBeNull();
   });
 
   it("agent elements forwards href, text and frame filters", async () => {
