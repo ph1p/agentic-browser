@@ -7,6 +7,7 @@ import {
   applySuccess,
   detectStalenessSignal,
 } from "./staleness-detector.js";
+import { redactUrlsInText, stripUrl } from "./redact-step-payload.js";
 import { SiteProfileStore } from "./site-profile-store.js";
 import { TaskInsightStore } from "./task-insight-store.js";
 import type {
@@ -161,7 +162,8 @@ export class MemoryService {
     return verified;
   }
 
-  recordSuccess(input: RecordExecutionInput): TaskInsight {
+  recordSuccess(rawInput: RecordExecutionInput): TaskInsight {
+    const input = this.sanitizeInput(rawInput);
     this.updateSiteProfile(input.siteDomain, input.selector, input.url, input.sitePathPattern);
 
     const insights = this.store.list();
@@ -228,7 +230,8 @@ export class MemoryService {
     return withAliases;
   }
 
-  recordFailure(input: RecordExecutionInput, errorMessage: string): TaskInsight | undefined {
+  recordFailure(rawInput: RecordExecutionInput, errorMessage: string): TaskInsight | undefined {
+    const input = this.sanitizeInput(rawInput);
     this.updateSiteProfile(input.siteDomain, input.selector, input.url, input.sitePathPattern);
 
     const insights = this.store.list();
@@ -238,7 +241,7 @@ export class MemoryService {
     }
 
     const signal = detectStalenessSignal(errorMessage, input.selector);
-    const evidence = this.createEvidence(input, "failure", errorMessage);
+    const evidence = this.createEvidence(input, "failure", redactUrlsInText(errorMessage));
 
     const failed = applyFailure(
       {
@@ -440,6 +443,16 @@ export class MemoryService {
     const leftSegment = normalizePathSegment(left);
     const rightSegment = normalizePathSegment(right);
     return Boolean(leftSegment) && leftSegment === rightSegment;
+  }
+
+  /** Strip query strings and fragments from every URL-bearing field before it is persisted. */
+  private sanitizeInput(input: RecordExecutionInput): RecordExecutionInput {
+    return {
+      ...input,
+      url: input.url ? (stripUrl(input.url) ?? undefined) : undefined,
+      expectedOutcome: redactUrlsInText(input.expectedOutcome),
+      taskIntent: redactUrlsInText(input.taskIntent),
+    };
   }
 
   private createEvidence(

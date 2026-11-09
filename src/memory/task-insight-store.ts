@@ -9,7 +9,7 @@ import {
   type MemoryState,
   type TaskInsight,
 } from "./memory-schemas.js";
-import { redactStepPayload } from "./redact-step-payload.js";
+import { redactStepPayload, redactUrlsInText, stripUrl } from "./redact-step-payload.js";
 
 const EMPTY_STATE: MemoryState = { insights: [] };
 const FLUSH_DELAY_MS = 500;
@@ -116,10 +116,39 @@ export class TaskInsightStore {
     return this.cached;
   }
 
-  /** Redact payloads of already-persisted steps in place. Returns true if anything changed. */
+  /**
+   * Redact already-persisted step payloads and URL query strings/fragments in place.
+   * Returns true if anything changed.
+   */
   private sanitizeCached(insights: TaskInsight[]): boolean {
     let changed = false;
     for (const insight of insights) {
+      const expectedOutcome = redactUrlsInText(insight.expectedOutcome);
+      if (expectedOutcome !== insight.expectedOutcome) {
+        insight.expectedOutcome = expectedOutcome;
+        changed = true;
+      }
+      const taskIntent = redactUrlsInText(insight.taskIntent);
+      if (taskIntent !== insight.taskIntent) {
+        insight.taskIntent = taskIntent;
+        changed = true;
+      }
+      for (const evidence of insight.evidence) {
+        if (evidence.url !== undefined) {
+          const url = stripUrl(evidence.url);
+          if (url !== evidence.url) {
+            evidence.url = url;
+            changed = true;
+          }
+        }
+        if (evidence.reason !== undefined) {
+          const reason = redactUrlsInText(evidence.reason);
+          if (reason !== evidence.reason) {
+            evidence.reason = reason;
+            changed = true;
+          }
+        }
+      }
       for (const step of insight.actionRecipe) {
         const redacted = redactStepPayload(step.payload);
         if (JSON.stringify(redacted) !== JSON.stringify(step.payload)) {
