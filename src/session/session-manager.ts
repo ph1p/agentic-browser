@@ -20,6 +20,7 @@ import {
   type PageContentOptions,
 } from "./browser-controller.js";
 import { SessionStore, type StoredSessionRecord } from "./session-store.js";
+import { assertNavigableUrl } from "./url-policy.js";
 import type { TaskStep } from "../memory/memory-schemas.js";
 import { redactStepPayload } from "../memory/redact-step-payload.js";
 
@@ -181,6 +182,7 @@ export class SessionManager {
         if (!url) {
           throw new Error("navigate command requires payload.url");
         }
+        assertNavigableUrl(url, { allowFileUrls: this.ctx.config.allowFileUrls });
         const finalUrl = await this.browser.navigate(record.targetWsUrl, url);
         this.store.setLastUrl(sessionId, finalUrl);
         resultMessage = `Navigated to ${finalUrl}`;

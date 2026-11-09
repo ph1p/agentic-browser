@@ -111,6 +111,7 @@ AgenticBrowserCore → ControlApi → SessionManager → BrowserController (CDP)
 - `AGENTIC_BROWSER_DIR` — base dir for sessions/memory/events (default: `~/.agentic-browser`)
 - `AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH` — explicit Chrome path (auto-discovered if not set)
 - `AGENTIC_BROWSER_CDP_URL` — connect to an already-running Chrome via CDP (e.g. `http://127.0.0.1:9222`)
+- `AGENTIC_BROWSER_ALLOW_FILE_URLS` — allow `file:` URLs in navigate (`true` or `1`); default is http(s) and about:blank only
 - `AGENTIC_BROWSER_USER_PROFILE` — use real Chrome profile (`default`, `true`, or absolute path)
 
 ## MCP Server

@@ -8,6 +8,7 @@ export interface AppConfig {
   userProfileDir?: string;
   headless?: boolean;
   userAgent?: string;
+  allowFileUrls: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -27,5 +28,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     userProfileDir,
     headless: env.AGENTIC_BROWSER_HEADLESS === "true" || env.AGENTIC_BROWSER_HEADLESS === "1",
     userAgent: env.AGENTIC_BROWSER_USER_AGENT || undefined,
+    allowFileUrls:
+      env.AGENTIC_BROWSER_ALLOW_FILE_URLS === "true" || env.AGENTIC_BROWSER_ALLOW_FILE_URLS === "1",
   };
 }
