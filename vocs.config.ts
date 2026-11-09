@@ -1,9 +1,12 @@
-import { defineConfig } from "vocs";
+import { defineConfig } from "vocs/config";
 
 export default defineConfig({
   title: "agentic-browser",
   description: "Browser automation for AI agents via Chrome DevTools Protocol",
   basePath: "/agentic-browser",
+  srcDir: "docs",
+  outDir: "docs/dist",
+  renderStrategy: "full-static",
   sidebar: [
     { text: "Overview", link: "/" },
     { text: "Getting Started", link: "/getting-started" },
