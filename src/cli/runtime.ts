@@ -87,12 +87,18 @@ export class AgenticBrowserCore {
     visibleOnly?: boolean;
     limit?: number;
     selector?: string;
+    href?: string;
+    text?: string;
+    frame?: string;
   }) {
     return await this.api.getInteractiveElements(input.sessionId, {
       roles: input.roles,
       visibleOnly: input.visibleOnly,
       limit: input.limit,
       selector: input.selector,
+      href: input.href,
+      text: input.text,
+      frame: input.frame,
     } satisfies InteractiveElementsOptions);
   }
 
@@ -106,6 +112,26 @@ export class AgenticBrowserCore {
 
   async getCurrentUrl(sessionId: string) {
     return await this.api.getCurrentUrl(sessionId);
+  }
+
+  async getPageState(sessionId: string) {
+    return await this.api.getPageState(sessionId);
+  }
+
+  async listTabs(sessionId: string) {
+    return await this.api.listTabs(sessionId);
+  }
+
+  async switchTab(sessionId: string, tabId: string) {
+    return await this.api.switchTab(sessionId, tabId);
+  }
+
+  async newTab(sessionId: string) {
+    return await this.api.newTab(sessionId);
+  }
+
+  async closeTab(sessionId: string, tabId: string) {
+    return await this.api.closeTab(sessionId, tabId);
   }
 
   async restartSession(sessionId: string) {
