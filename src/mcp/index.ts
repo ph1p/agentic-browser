@@ -13,6 +13,7 @@ import {
   compactPageContent,
 } from "./response-helpers.js";
 import { ElementRefRegistry } from "./element-refs.js";
+import { createSessionResolver } from "./session-resolver.js";
 
 function readPackageVersion(): string {
   try {
@@ -48,7 +49,7 @@ function classifyError(message: string): ErrorCode {
 }
 
 let core: AgenticBrowserCore;
-let activeSessionId: string | undefined;
+const sessionResolver = createSessionResolver(() => getCore().startSession());
 const DEFAULT_MCP_MAX_CHARS: Record<string, number | undefined> = {
   summary: undefined,
   title: undefined,
@@ -106,13 +107,7 @@ async function snapshotElements(
  * This means the LLM never has to call browser_start_session explicitly.
  */
 async function resolveSession(sessionId?: string): Promise<string> {
-  if (sessionId) return sessionId;
-  if (activeSessionId) return activeSessionId;
-
-  // Auto-start a session
-  const session = await getCore().startSession();
-  activeSessionId = session.sessionId;
-  return activeSessionId;
+  return sessionResolver.resolve(sessionId);
 }
 
 const server = new McpServer({
@@ -126,7 +121,7 @@ server.tool(
   {},
   async () => {
     const session = await getCore().startSession();
-    activeSessionId = session.sessionId;
+    sessionResolver.set(session.sessionId);
     // Strip authTokenRef — security credential the LLM never needs
     const { authTokenRef: _, ...compactSession } = session;
     return { content: [{ type: "text" as const, text: JSON.stringify(compactSession) }] };
@@ -471,7 +466,7 @@ server.tool(
     sessionId: z.string().optional().describe("Session ID (uses active session if omitted)"),
   },
   async ({ sessionId }) => {
-    const sid = sessionId ?? activeSessionId;
+    const sid = sessionId ?? sessionResolver.current();
     if (!sid) {
       return {
         content: [
@@ -484,7 +479,7 @@ server.tool(
     }
     await getCore().stopSession(sid);
     refs.clear(sid);
-    if (activeSessionId === sid) activeSessionId = undefined;
+    if (sessionResolver.current() === sid) sessionResolver.clear();
     return {
       content: [{ type: "text" as const, text: JSON.stringify({ ok: true, stopped: sid }) }],
     };
@@ -497,13 +492,14 @@ export async function main() {
   // MCP SDK uses property-based event handlers, not addEventListener
   // oxlint-disable-next-line unicorn/prefer-add-event-listener
   transport.onclose = async () => {
-    if (activeSessionId) {
+    const activeId = sessionResolver.current();
+    if (activeId) {
       try {
-        await getCore().stopSession(activeSessionId);
+        await getCore().stopSession(activeId);
       } catch {
         // Best-effort cleanup
       }
-      activeSessionId = undefined;
+      sessionResolver.clear();
     }
     // Flush pending memory writes before exit
     try {

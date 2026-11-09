@@ -1107,6 +1107,8 @@ export class ChromeCdpBrowserController implements BrowserController {
     }
   >();
 
+  private readonly pendingConnections = new Map<string, Promise<CdpClient>>();
+
   private readonly cleanupInterval: ReturnType<typeof setInterval>;
 
   /**
@@ -1150,14 +1152,25 @@ export class ChromeCdpBrowserController implements BrowserController {
       return cached.conn;
     }
 
-    const conn = await this.connectionFactory(targetWsUrl);
-    await this.applySessionOverrides(conn, targetWsUrl);
-    this.connections.set(targetWsUrl, {
-      conn,
-      enabled: { page: false, runtime: false },
-      lastUsedAt: Date.now(),
-    });
-    return conn;
+    const pending = this.pendingConnections.get(targetWsUrl);
+    if (pending) return pending;
+
+    const p = (async () => {
+      const conn = await this.connectionFactory(targetWsUrl);
+      await this.applySessionOverrides(conn, targetWsUrl);
+      this.connections.set(targetWsUrl, {
+        conn,
+        enabled: { page: false, runtime: false },
+        lastUsedAt: Date.now(),
+      });
+      return conn;
+    })();
+    this.pendingConnections.set(targetWsUrl, p);
+    try {
+      return await p;
+    } finally {
+      this.pendingConnections.delete(targetWsUrl);
+    }
   }
 
   /**

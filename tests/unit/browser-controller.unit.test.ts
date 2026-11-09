@@ -117,6 +117,45 @@ describe("ChromeCdpBrowserController connection reuse", () => {
     expect(runtimeEnables).toBe(1);
   });
 
+  it("dedupes concurrent connection setup for the same target", async () => {
+    const conn = new FakeConnection({ runtimeValue: "ok" });
+    let factoryCalls = 0;
+    const controller = new ChromeCdpBrowserController("/tmp", async () => {
+      factoryCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return conn;
+    });
+
+    try {
+      await Promise.all([
+        controller.getContent("ws://concurrent", { mode: "title" }),
+        controller.getContent("ws://concurrent", { mode: "title" }),
+      ]);
+      expect(factoryCalls).toBe(1);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("clears a failed pending connection so the next call retries", async () => {
+    const conn = new FakeConnection({ runtimeValue: "ok" });
+    let factoryCalls = 0;
+    const controller = new ChromeCdpBrowserController("/tmp", async () => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) throw new Error("connect failed");
+      return conn;
+    });
+
+    try {
+      await expect(controller.getContent("ws://flaky", { mode: "title" })).rejects.toThrow();
+      const result = await controller.getContent("ws://flaky", { mode: "title" });
+      expect(result.content).toBe("ok");
+      expect(factoryCalls).toBeGreaterThanOrEqual(2);
+    } finally {
+      controller.dispose();
+    }
+  });
+
   it("retries with a fresh connection when evaluate fails", async () => {
     const conn1 = new FakeConnection({ failOnRuntimeEvaluate: true });
     const conn2 = new FakeConnection({ runtimeValue: "ok" });
