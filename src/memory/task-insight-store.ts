@@ -7,6 +7,7 @@ import {
   type MemoryState,
   type TaskInsight,
 } from "./memory-schemas.js";
+import { redactStepPayload } from "./redact-step-payload.js";
 
 const EMPTY_STATE: MemoryState = { insights: [] };
 const FLUSH_DELAY_MS = 500;
@@ -107,7 +108,25 @@ export class TaskInsightStore {
     if (this.cached) return this.cached;
     const state = this.readDisk();
     this.cached = state.insights;
+    if (this.sanitizeCached(this.cached)) {
+      this.markDirty();
+    }
     return this.cached;
+  }
+
+  /** Redact payloads of already-persisted steps in place. Returns true if anything changed. */
+  private sanitizeCached(insights: TaskInsight[]): boolean {
+    let changed = false;
+    for (const insight of insights) {
+      for (const step of insight.actionRecipe) {
+        const redacted = redactStepPayload(step.payload);
+        if (JSON.stringify(redacted) !== JSON.stringify(step.payload)) {
+          step.payload = redacted;
+          changed = true;
+        }
+      }
+    }
+    return changed;
   }
 
   private markDirty(): void {

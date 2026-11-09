@@ -21,6 +21,7 @@ import {
 } from "./browser-controller.js";
 import { SessionStore, type StoredSessionRecord } from "./session-store.js";
 import type { TaskStep } from "../memory/memory-schemas.js";
+import { redactStepPayload } from "../memory/redact-step-payload.js";
 
 interface CreateSessionInput {
   browser: "chrome";
@@ -647,7 +648,7 @@ export class SessionManager {
               : "assert",
         summary: input.type === "interact" ? `interact:${action ?? "unknown"}` : input.type,
         selector,
-        payload: input.payload,
+        payload: redactStepPayload(input.payload),
       },
       selector,
       url: inputUrl,
