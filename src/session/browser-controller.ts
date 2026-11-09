@@ -1634,6 +1634,75 @@ export class ChromeCdpBrowserController implements BrowserController {
     return value;
   }
 
+  /**
+   * Arm a wait for a main-frame navigation BEFORE the click is dispatched, so
+   * the start event cannot be missed. Resolves "navigated" once the main frame
+   * started loading and then committed/loaded (each stage timeout-tolerant),
+   * or "none" when no main-frame load started within 500 ms.
+   */
+  private async armMainFrameNavigationWait(
+    conn: CdpClient,
+  ): Promise<{ result: Promise<"navigated" | "none"> }> {
+    const matching = conn.waitForEventMatching?.bind(conn);
+    if (!matching) {
+      // Legacy behavior for clients without predicate waits.
+      const legacy = (async (): Promise<"navigated" | "none"> => {
+        try {
+          const legacyWindowMs = 50;
+          await conn.waitForEvent("Page.frameNavigated", legacyWindowMs);
+        } catch {
+          return "none";
+        }
+        try {
+          await Promise.race([
+            conn.waitForEvent("Page.loadEventFired", 3000),
+            conn.waitForEvent("Page.frameStoppedLoading", 3000),
+          ]);
+        } catch {
+          // load didn't fire in time — page may still be usable
+        }
+        return "navigated";
+      })();
+      return { result: legacy };
+    }
+
+    let mainFrameId: string | undefined;
+    try {
+      const tree = await conn.send<{ frameTree?: { frame?: { id?: string } } }>(
+        "Page.getFrameTree",
+      );
+      mainFrameId = tree.frameTree?.frame?.id;
+    } catch {
+      // unknown main frame id — accept any frame's start event
+    }
+    const isMain = (params: { frameId?: string }): boolean =>
+      mainFrameId === undefined || params.frameId === mainFrameId;
+
+    const started = matching<{ frameId?: string }>("Page.frameStartedLoading", isMain, 500).then(
+      () => true,
+      () => false,
+    );
+
+    const result = (async (): Promise<"navigated" | "none"> => {
+      if (!(await started)) return "none";
+      // Arm both stages right after the start event; the next CDP message is
+      // a separate macrotask, so nothing can slip between them.
+      const navigated = matching<{ frame?: { parentId?: string } }>(
+        "Page.frameNavigated",
+        (params) => !params.frame?.parentId,
+        5000,
+      ).catch(() => undefined);
+      const loaded = Promise.race([
+        matching<{ frameId?: string }>("Page.frameStoppedLoading", isMain, 5000),
+        matching<unknown>("Page.loadEventFired", () => true, 5000),
+      ]).catch(() => undefined);
+      await navigated;
+      await loaded;
+      return "navigated";
+    })();
+    return { result };
+  }
+
   private async dispatchMouseClick(conn: CdpClient, x: number, y: number): Promise<void> {
     await conn.send("Input.dispatchMouseEvent", {
       type: "mouseMoved",
@@ -1801,21 +1870,9 @@ export class ChromeCdpBrowserController implements BrowserController {
 
           if (payload.action === "click") {
             const point = await this.preparePointerTarget(conn, payload);
+            const nav = await this.armMainFrameNavigationWait(conn);
             await this.dispatchMouseClick(conn, point.x, point.y);
-
-            try {
-              await conn.waitForEvent("Page.frameNavigated", 50);
-              try {
-                await Promise.race([
-                  conn.waitForEvent("Page.loadEventFired", 3000),
-                  conn.waitForEvent("Page.frameStoppedLoading", 3000),
-                ]);
-              } catch {
-                // load didn't fire in time — page may still be usable
-              }
-            } catch {
-              // No navigation happened – that's fine for non-navigating clicks
-            }
+            await nav.result;
 
             return "clicked";
           }
