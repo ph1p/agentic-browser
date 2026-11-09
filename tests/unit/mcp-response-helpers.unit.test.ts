@@ -135,6 +135,7 @@ describe("compactMemoryResults", () => {
           { alias: "submit", selector: "#submit", fallbackSelectors: [".submit"] },
         ],
         score: 0.99,
+        recipe: [{ action: "type", selector: "#email", needsInput: true }],
       },
     ]);
 
@@ -151,6 +152,7 @@ describe("compactMemoryResults", () => {
             { alias: "email", selector: "#email" },
             { alias: "submit", selector: "#submit", fallbackSelectors: [".submit"] },
           ],
+          recipe: [{ action: "type", selector: "#email", needsInput: true }],
         },
       ],
     });

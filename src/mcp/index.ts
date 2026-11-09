@@ -133,15 +133,21 @@ server.tool(
   "Navigate the browser to a URL. A session is auto-started if needed.",
   {
     url: z.string().describe("The URL to navigate to"),
+    intent: z
+      .string()
+      .optional()
+      .describe(
+        'Task this step belongs to, in your own words (e.g. "log in", "search products"). Steps sharing an intent are remembered together and returned as a recipe by browser_search_memory',
+      ),
     sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
   },
-  async ({ url, sessionId }) => {
+  async ({ url, intent, sessionId }) => {
     const sid = await resolveSession(sessionId);
     const result = await getCore().runCommand({
       sessionId: sid,
       commandId: genId("nav"),
       type: "navigate",
-      payload: { url },
+      payload: intent ? { url, intent } : { url },
     });
     let cookieBanner: { dismissed: boolean; method?: string; detail?: string } | undefined;
     if (result.resultStatus === "success") {
@@ -228,6 +234,12 @@ server.tool(
       .number()
       .optional()
       .describe('Timeout in milliseconds (for "waitFor" action, default 4000)'),
+    intent: z
+      .string()
+      .optional()
+      .describe(
+        'Task this step belongs to, in your own words (e.g. "log in", "search products"). Steps sharing an intent are remembered together and returned as a recipe by browser_search_memory',
+      ),
     sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
   },
   async ({
@@ -241,10 +253,12 @@ server.tool(
     scrollX,
     scrollY,
     timeoutMs,
+    intent,
     sessionId,
   }) => {
     const sid = await resolveSession(sessionId);
     const payload: Record<string, unknown> = { action };
+    if (intent) payload.intent = intent;
 
     // Resolve a ref to its stored selector target. An explicit selector wins if
     // both are given; a ref that no longer resolves is reported clearly rather
@@ -398,11 +412,13 @@ server.tool(
 
 server.tool(
   "browser_search_memory",
-  "Search task memory for previously learned selectors, selector aliases, and interaction patterns. Results include selectorHints (proven selectors) and selectorAliases (human-readable names mapped to selectors with fallbacks). Use this before interacting with a known site to reuse proven selectors instead of rediscovering them.",
+  "Search task memory for previously learned selectors, selector aliases, and interaction patterns. Matching is fuzzy, so a rephrased task still finds earlier runs. Results include recipe (the ordered steps that worked; needsInput marks steps whose typed text was redacted), selectorHints (proven selectors) and selectorAliases (human-readable names mapped to selectors with fallbacks). Use this before interacting with a known site to reuse proven selectors instead of rediscovering them.",
   {
     taskIntent: z
       .string()
-      .describe('What you want to do, e.g. "login:github.com" or "search:amazon.de"'),
+      .describe(
+        'What you want to do, e.g. "log in" or "search products". Use the same wording you passed as intent to navigate/interact',
+      ),
     siteDomain: z.string().optional().describe("Domain to scope the search"),
     limit: z.number().default(5).describe("Maximum number of results"),
   },

@@ -102,6 +102,15 @@ export interface SiteProfileSummary {
   visitCount: number;
 }
 
+/** One replayable step of a remembered task. */
+export interface RecipeStepSummary {
+  action: string;
+  selector?: string;
+  url?: string;
+  /** Typed text or a selected value was not stored; supply it again on replay. */
+  needsInput?: true;
+}
+
 export interface MemorySearchResult {
   insightId: string;
   taskIntent: string;
@@ -109,6 +118,8 @@ export interface MemorySearchResult {
   confidence: number;
   freshness: InsightFreshness;
   lastVerifiedAt: string;
+  /** The steps that completed this task last time, in order. */
+  recipe: RecipeStepSummary[];
   selectorHints: string[];
   selectorAliases: SelectorAlias[];
   score: number;

@@ -126,4 +126,44 @@ describe("memory ranking", () => {
       { alias: "search", selector: "#search", fallbackSelectors: [] },
     ]);
   });
+
+  it("matches rephrased intents and returns the recipe that worked", () => {
+    const index = new MemoryIndex();
+    const results = index.search(
+      [
+        insight({
+          insightId: "login",
+          taskIntent: "log in to account",
+          actionRecipe: [
+            {
+              type: "navigate",
+              summary: "open login",
+              payload: { url: "https://example.com/login" },
+            },
+            {
+              type: "interact",
+              summary: "type email",
+              selector: "#email",
+              payload: { action: "type", selector: "#email", redacted: true },
+            },
+            {
+              type: "interact",
+              summary: "submit",
+              selector: "#submit",
+              payload: { action: "click", selector: "#submit" },
+            },
+          ],
+        }),
+        insight({ insightId: "unrelated", taskIntent: "search products" }),
+      ],
+      { taskIntent: "account login", siteDomain: "example.com" },
+    );
+
+    expect(results.map((result) => result.insightId)).toEqual(["login"]);
+    expect(results[0]?.recipe).toEqual([
+      { action: "navigate", url: "https://example.com/login" },
+      { action: "type", selector: "#email", needsInput: true },
+      { action: "click", selector: "#submit" },
+    ]);
+  });
 });

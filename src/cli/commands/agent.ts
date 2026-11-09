@@ -15,8 +15,49 @@ import type { Runtime } from "../runtime.js";
 
 const STATE_FILE_NAME = "agent-state.json";
 
+interface StoredRef {
+  selector: string;
+  fallbackSelectors?: string[];
+  frame?: string;
+}
+
 interface AgentState {
   sessionId: string | null;
+  /** Element refs from the last `agent elements` call, keyed "e1", "e2", … */
+  refs?: { sessionId: string; byRef: Record<string, StoredRef> };
+}
+
+const REF_PATTERN = /^@?(e\d+)$/;
+
+function storeRefs(runtime: Runtime, refs: AgentState["refs"]): void {
+  const state = loadState(runtime);
+  saveState(runtime, { ...state, refs });
+}
+
+/**
+ * Swap a short ref ("e3" or "@e3") from the last `agent elements` call for the
+ * selector it stands for. Plain selectors pass through untouched.
+ */
+function resolveRef(
+  runtime: Runtime,
+  sessionId: string,
+  input: AgentInteractInput,
+): AgentInteractInput {
+  const match = input.selector ? REF_PATTERN.exec(input.selector) : null;
+  if (!match) return input;
+  const state = loadState(runtime);
+  const stored = state.refs?.sessionId === sessionId ? state.refs.byRef[match[1]] : undefined;
+  if (!stored) {
+    throw new Error(
+      `Unknown or stale ref "${input.selector}". Run "agent elements" to refresh element refs.`,
+    );
+  }
+  return {
+    ...input,
+    selector: stored.selector,
+    fallbackSelectors: [...(stored.fallbackSelectors ?? []), ...(input.fallbackSelectors ?? [])],
+    frame: input.frame ?? stored.frame,
+  };
 }
 
 function stateFilePath(runtime: Runtime): string {
@@ -136,11 +177,13 @@ async function executeAgentCommand(
   return await retryAfterRestart();
 }
 
-export async function agentNavigate(runtime: Runtime, input: { url: string }) {
+export async function agentNavigate(runtime: Runtime, input: { url: string; intent?: string }) {
   const result = await executeAgentCommand(runtime, {
     type: "navigate",
-    payload: { url: input.url },
+    payload: input.intent ? { url: input.url, intent: input.intent } : { url: input.url },
   });
+  // Refs point at the previous page's elements; drop them so they cannot misfire.
+  storeRefs(runtime, undefined);
   let cookieBanner: DismissCookieBannerResult | undefined;
 
   if (result.resultStatus === "success") {
@@ -159,10 +202,14 @@ export async function agentNavigate(runtime: Runtime, input: { url: string }) {
   return { ok: true, action: "navigate", ...result, url: page?.url, cookieBanner };
 }
 
-export async function agentInteract(runtime: Runtime, input: InteractPayload) {
+/** `intent` names the task this step belongs to; memory groups steps by it. */
+export type AgentInteractInput = InteractPayload & { intent?: string };
+
+export async function agentInteract(runtime: Runtime, input: AgentInteractInput) {
+  const payload = resolveRef(runtime, requireSessionId(runtime), input);
   const result = await executeAgentCommand(runtime, {
     type: "interact",
-    payload: input as unknown as Record<string, unknown>,
+    payload: payload as unknown as Record<string, unknown>,
   });
   // Clicks and key presses often navigate; report where the page ended up.
   const page = await tryPageState(runtime, result.sessionId);
@@ -442,7 +489,18 @@ export async function agentElements(
     text: input.text,
     frame: input.frame,
   });
-  return { ok: true, action: "elements", ...result };
+  const byRef: Record<string, StoredRef> = {};
+  const elements = result.elements.map((element, index) => {
+    const ref = `e${index + 1}`;
+    byRef[ref] = {
+      selector: element.selector,
+      fallbackSelectors: element.fallbackSelectors,
+      frame: input.frame,
+    };
+    return { ref, ...element };
+  });
+  storeRefs(runtime, { sessionId, byRef });
+  return { ok: true, action: "elements", ...result, elements };
 }
 
 export async function agentMemorySearch(

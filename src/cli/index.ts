@@ -38,6 +38,8 @@ import { runMemoryStats } from "./commands/memory-stats.js";
 const collect = (value: string, previous: string[] = []) => [...previous, value];
 
 const FRAME_HELP = "iframe selector to run in (cross-origin frames supported)";
+const INTENT_HELP =
+  'task this step belongs to, e.g. "log in"; memory groups steps by it (see agent memory-search)';
 
 /** Resolves `<selector>` or `--text` (substring; `--exact` for exact match) to one locator. */
 function resolveTarget(selector: string | undefined, options: { text?: string; exact?: boolean }) {
@@ -49,7 +51,13 @@ function resolveTarget(selector: string | undefined, options: { text?: string; e
   return selector;
 }
 
-type TargetOptions = { fallback: string[]; text?: string; exact?: boolean; frame?: string };
+type TargetOptions = {
+  fallback: string[];
+  text?: string;
+  exact?: boolean;
+  frame?: string;
+  intent?: string;
+};
 
 async function main() {
   const runtime = createCliRuntime();
@@ -271,40 +279,50 @@ async function main() {
   agent
     .command("navigate")
     .argument("<url>")
-    .action(async (url: string) => {
-      const result = await agentNavigate(runtime, { url });
+    .option("--intent <task>", INTENT_HELP)
+    .action(async (url: string, options: { intent?: string }) => {
+      const result = await agentNavigate(runtime, { url, intent: options.intent });
       console.log(JSON.stringify(result));
     });
 
   agent
     .command("click")
-    .argument("[selector]", "CSS selector or composed locator (a >>> b)")
+    .argument(
+      "[selector]",
+      "element ref (e3) from agent elements, CSS selector, or composed locator (a >>> b)",
+    )
     .option("--text <text>", "click the element with this visible text instead of a selector")
     .option("--exact", "with --text: require an exact text match")
     .option("--frame <selector>", FRAME_HELP)
     .option("--fallback <selector>", "backup CSS selector", collect, [])
+    .option("--intent <task>", INTENT_HELP)
     .action(async (selector: string | undefined, options: TargetOptions) => {
       const result = await agentInteract(runtime, {
         action: "click",
         selector: resolveTarget(selector, options),
         frame: options.frame,
         fallbackSelectors: options.fallback,
+        intent: options.intent,
       });
       console.log(JSON.stringify(result));
     });
 
   agent
     .command("type")
-    .argument("<selectorOrText>", "CSS selector, or the text to type when --into-text is used")
+    .argument(
+      "<selectorOrText>",
+      "element ref (e3), CSS selector, or the text to type when --into-text is used",
+    )
     .argument("[text]")
     .option("--into-text <label>", "target the field by its visible text/label/placeholder")
     .option("--frame <selector>", FRAME_HELP)
     .option("--fallback <selector>", "backup CSS selector", collect, [])
+    .option("--intent <task>", INTENT_HELP)
     .action(
       async (
         first: string,
         second: string | undefined,
-        options: { intoText?: string; frame?: string; fallback: string[] },
+        options: { intoText?: string; frame?: string; fallback: string[]; intent?: string },
       ) => {
         const selector = options.intoText ? `text=${options.intoText}` : first;
         const text = options.intoText ? first : second;
@@ -315,6 +333,7 @@ async function main() {
           text,
           frame: options.frame,
           fallbackSelectors: options.fallback,
+          intent: options.intent,
         });
         console.log(JSON.stringify(result));
       },
@@ -323,10 +342,12 @@ async function main() {
   agent
     .command("press")
     .argument("<key>")
-    .action(async (key: string) => {
+    .option("--intent <task>", INTENT_HELP)
+    .action(async (key: string, options: { intent?: string }) => {
       const result = await agentInteract(runtime, {
         action: "press",
         key,
+        intent: options.intent,
       });
       console.log(JSON.stringify(result));
     });
@@ -364,12 +385,14 @@ async function main() {
     .option("--exact", "with --text: require an exact text match")
     .option("--frame <selector>", FRAME_HELP)
     .option("--fallback <selector>", "backup CSS selector", collect, [])
+    .option("--intent <task>", INTENT_HELP)
     .action(async (selector: string | undefined, options: TargetOptions) => {
       const result = await agentInteract(runtime, {
         action: "hover",
         selector: resolveTarget(selector, options),
         frame: options.frame,
         fallbackSelectors: options.fallback,
+        intent: options.intent,
       });
       console.log(JSON.stringify(result));
     });
@@ -380,14 +403,20 @@ async function main() {
     .argument("<value>")
     .option("--frame <selector>", FRAME_HELP)
     .option("--fallback <selector>", "backup CSS selector", collect, [])
+    .option("--intent <task>", INTENT_HELP)
     .action(
-      async (selector: string, value: string, options: { frame?: string; fallback: string[] }) => {
+      async (
+        selector: string,
+        value: string,
+        options: { frame?: string; fallback: string[]; intent?: string },
+      ) => {
         const result = await agentInteract(runtime, {
           action: "select",
           selector,
           value,
           frame: options.frame,
           fallbackSelectors: options.fallback,
+          intent: options.intent,
         });
         console.log(JSON.stringify(result));
       },
@@ -398,15 +427,22 @@ async function main() {
     .argument("<selector>")
     .option("--frame <selector>", FRAME_HELP)
     .option("--fallback <selector>", "backup CSS selector", collect, [])
-    .action(async (selector: string, options: { frame?: string; fallback: string[] }) => {
-      const result = await agentInteract(runtime, {
-        action: "toggle",
-        selector,
-        frame: options.frame,
-        fallbackSelectors: options.fallback,
-      });
-      console.log(JSON.stringify(result));
-    });
+    .option("--intent <task>", INTENT_HELP)
+    .action(
+      async (
+        selector: string,
+        options: { frame?: string; fallback: string[]; intent?: string },
+      ) => {
+        const result = await agentInteract(runtime, {
+          action: "toggle",
+          selector,
+          frame: options.frame,
+          fallbackSelectors: options.fallback,
+          intent: options.intent,
+        });
+        console.log(JSON.stringify(result));
+      },
+    );
 
   agent
     .command("scroll")
@@ -414,16 +450,26 @@ async function main() {
     .option("--y <pixels>", "vertical scroll delta", "0")
     .option("--selector <selector>", "scroll a specific element instead of the page")
     .option("--fallback <selector>", "backup CSS selector", collect, [])
-    .action(async (options: { x: string; y: string; selector?: string; fallback: string[] }) => {
-      const result = await agentInteract(runtime, {
-        action: "scroll",
-        selector: options.selector,
-        fallbackSelectors: options.fallback,
-        scrollX: Number.parseInt(options.x, 10),
-        scrollY: Number.parseInt(options.y, 10),
-      });
-      console.log(JSON.stringify(result));
-    });
+    .option("--intent <task>", INTENT_HELP)
+    .action(
+      async (options: {
+        x: string;
+        y: string;
+        selector?: string;
+        fallback: string[];
+        intent?: string;
+      }) => {
+        const result = await agentInteract(runtime, {
+          action: "scroll",
+          selector: options.selector,
+          fallbackSelectors: options.fallback,
+          intent: options.intent,
+          scrollX: Number.parseInt(options.x, 10),
+          scrollY: Number.parseInt(options.y, 10),
+        });
+        console.log(JSON.stringify(result));
+      },
+    );
 
   agent.command("back").action(async () => {
     const result = await agentInteract(runtime, { action: "goBack" });
