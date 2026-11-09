@@ -6,6 +6,7 @@ import path from "node:path";
 
 import WebSocket from "ws";
 
+import { ensurePrivateDir } from "../lib/secure-fs.js";
 import { discoverChrome } from "./chrome-launcher.js";
 
 export type InteractAction =
@@ -1289,7 +1290,11 @@ export class ChromeCdpBrowserController implements BrowserController {
     } else {
       profileDir = path.join(this.baseDir, "profiles", sessionId);
     }
-    fs.mkdirSync(profileDir, { recursive: true });
+    if (userProfileDir) {
+      fs.mkdirSync(profileDir, { recursive: true });
+    } else {
+      ensurePrivateDir(profileDir);
+    }
 
     // Chrome locks its profile with a "SingletonLock" file. If present, another
     // Chrome instance owns this profile and a new launch will silently fail.

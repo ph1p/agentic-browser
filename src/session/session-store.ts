@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { Session } from "../lib/domain-schemas.js";
+import { ensurePrivateDir, writePrivateFileSync } from "../lib/secure-fs.js";
 
 export interface StoredSessionRecord {
   session: Session;
@@ -20,7 +21,7 @@ export class SessionStore {
   private readonly filePath: string;
 
   constructor(baseDir: string) {
-    fs.mkdirSync(baseDir, { recursive: true });
+    ensurePrivateDir(baseDir);
     this.filePath = path.join(baseDir, "sessions.json");
     if (!fs.existsSync(this.filePath)) {
       this.write({ sessions: {} });
@@ -142,7 +143,7 @@ export class SessionStore {
   private write(state: StoreState): void {
     // Atomic write: a concurrent reader in another process never sees a torn file.
     const tmp = `${this.filePath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8");
+    writePrivateFileSync(tmp, JSON.stringify(state, null, 2));
     fs.renameSync(tmp, this.filePath);
   }
 }

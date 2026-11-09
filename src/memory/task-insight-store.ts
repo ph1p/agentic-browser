@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { ensurePrivateDir, writePrivateFileSync } from "../lib/secure-fs.js";
 import {
   MemoryStateSchema,
   TaskInsightSchema,
@@ -29,7 +30,7 @@ export class TaskInsightStore {
 
   constructor(baseDir: string) {
     const memoryDir = path.join(baseDir, "memory");
-    fs.mkdirSync(memoryDir, { recursive: true });
+    ensurePrivateDir(memoryDir);
     this.filePath = path.join(memoryDir, "insights.json");
 
     // Clean up orphaned .tmp files from interrupted writes
@@ -184,7 +185,7 @@ export class TaskInsightStore {
 
   private writeDisk(state: MemoryState): void {
     const tempPath = `${this.filePath}.tmp`;
-    fs.writeFileSync(tempPath, JSON.stringify(state, null, 2), "utf8");
+    writePrivateFileSync(tempPath, JSON.stringify(state, null, 2));
     fs.renameSync(tempPath, this.filePath);
   }
 
