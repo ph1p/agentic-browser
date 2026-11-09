@@ -13,7 +13,7 @@ CLI and MCP server to control a local Chrome session for AI agents.
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 22+
 - Installed Chrome
 
 ## Install

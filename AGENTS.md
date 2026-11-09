@@ -3,14 +3,14 @@
 ## Quick Reference
 
 ```bash
-npm run build        # tsdown (~20ms)
-npm run typecheck    # tsc --noEmit
-npm run lint         # oxlint
-npm run lint:fix     # oxlint --fix
-npm run format       # oxfmt --write
-npm test             # vitest run
-npm run test:watch   # vitest
-npm run docs:dev     # vocs dev server
+pnpm build # tsdown (~20ms)
+pnpm typecheck # tsc --noEmit
+pnpm lint # oxlint
+pnpm lint:fix # oxlint --fix
+pnpm format # oxfmt --write
+pnpm test # vitest run
+pnpm test:watch # vitest
+pnpm docs:dev # vocs dev server
 ```
 
 ## Architecture
@@ -29,7 +29,7 @@ src/
     commands/agent.ts     — Stateful agent commands (auto-restart, retry, session persistence)
     commands/*.ts         — Low-level CLI command handlers
   mcp/
-    index.ts              — MCP server (stdio transport, 7 tools wrapping AgenticBrowserCore)
+    index.ts              — MCP server (stdio transport, tools wrapping AgenticBrowserCore)
   session/
     browser-controller.ts — BrowserController interface + ChromeCdpBrowserController (CDP WebSocket)
     session-manager.ts    — Orchestrates sessions, commands, memory recording
@@ -68,7 +68,7 @@ AgenticBrowserCore → ControlApi → SessionManager → BrowserController (CDP)
 
 - **ESM-only**: `"type": "module"`, use `.js` extensions in all TypeScript imports
 - **Zod v4**: `import { z } from "zod"` — `z.record()` requires key+value args
-- **Commander.js v14**: colon-namespaced commands (`session:start`, `memory:search`)
+- **Commander.js v15**: colon-namespaced commands (`session:start`, `memory:search`)
 - **CLI output**: exactly one JSON line to `stdout`, errors to `stderr`
 - **Types**: interfaces for public contracts, type aliases for unions/inferred
 - **No console.log in MCP server**: use `process.stderr.write()` for debug output
@@ -112,20 +112,25 @@ AgenticBrowserCore → ControlApi → SessionManager → BrowserController (CDP)
 - `AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH` — explicit Chrome path (auto-discovered if not set)
 - `AGENTIC_BROWSER_CDP_URL` — connect to an already-running Chrome via CDP (e.g. `http://127.0.0.1:9222`)
 - `AGENTIC_BROWSER_USER_PROFILE` — use real Chrome profile (`default`, `true`, or absolute path)
+- `AGENTIC_BROWSER_CHROME_PATH` — alias of `AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH`
+- `AGENTIC_BROWSER_HEADLESS` — `true` or `1` to launch Chrome headless
+- `AGENTIC_BROWSER_USER_AGENT` — override the browser user agent
 
 ## MCP Server
 
 Subcommand: `agentic-browser mcp` (stdio transport). Setup: `agentic-browser setup`. Tools:
 
-| Tool                    | Purpose                                                                                                   |
-| ----------------------- | --------------------------------------------------------------------------------------------------------- |
-| `browser_start_session` | Start Chrome, return sessionId                                                                            |
-| `browser_navigate`      | Navigate to URL                                                                                           |
-| `browser_interact`      | click / type / press / waitFor / scroll / hover / select / toggle / goBack / goForward / refresh / dialog |
-| `browser_get_content`   | Get page title / text / html                                                                              |
-| `browser_get_elements`  | Discover interactive elements                                                                             |
-| `browser_search_memory` | Search task memory                                                                                        |
-| `browser_stop_session`  | Stop Chrome session                                                                                       |
+| Tool                      | Purpose                                                                                                   |
+| ------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `browser_start_session`   | Start Chrome, return sessionId                                                                            |
+| `browser_navigate`        | Navigate to URL                                                                                           |
+| `browser_interact`        | click / type / press / waitFor / scroll / hover / select / toggle / goBack / goForward / refresh / dialog |
+| `browser_get_content`     | Get page title / text / html                                                                              |
+| `browser_get_elements`    | Discover interactive elements                                                                             |
+| `browser_search_memory`   | Search task memory                                                                                        |
+| `browser_stop_session`    | Stop Chrome session                                                                                       |
+| `browser_dismiss_cookies` | Dismiss cookie or consent banner                                                                          |
+| `browser_screenshot`      | Screenshot as base64 (jpeg or png, optional full page)                                                    |
 
 ## For Browser Automation Tasks
 
