@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { agentNavigate, agentStart } from "../../src/cli/commands/agent.js";
 import { createAgenticBrowserCore } from "../../src/cli/runtime.js";
@@ -78,5 +78,49 @@ describe.skipIf(process.platform === "win32")("private file permissions", () => 
     ensurePrivateDir(leaf);
 
     expect(fs.statSync(leaf).mode & 0o777).toBe(0o700);
+  });
+
+  it("ensurePrivateDir tightens a pre-existing 0755 dir", () => {
+    const dir = makeTempDir();
+    fs.chmodSync(dir, 0o755);
+
+    ensurePrivateDir(dir);
+
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+  });
+
+  it("ensurePrivateDir tightens only the leaf of a pre-existing nested dir", () => {
+    const parent = path.join(makeTempDir(), "a");
+    const leaf = path.join(parent, "b");
+    fs.mkdirSync(leaf, { recursive: true });
+    fs.chmodSync(parent, 0o755);
+    fs.chmodSync(leaf, 0o755);
+
+    ensurePrivateDir(leaf);
+
+    expect(fs.statSync(leaf).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(parent).mode & 0o777).toBe(0o755);
+  });
+
+  it("ensurePrivateDir leaves the home dir untouched", () => {
+    const dir = makeTempDir();
+    fs.chmodSync(dir, 0o755);
+    const spy = vi.spyOn(os, "homedir").mockReturnValue(dir);
+    try {
+      ensurePrivateDir(dir);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o755);
+  });
+
+  it("ensurePrivateDir keeps an already-private dir at 0700", () => {
+    const dir = makeTempDir();
+    fs.chmodSync(dir, 0o700);
+
+    ensurePrivateDir(dir);
+
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
   });
 });
