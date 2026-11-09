@@ -191,7 +191,7 @@ Text, HTML, and accessibility content are automatically truncated at the default
 
 ### `browser_get_elements`
 
-Discover interactive elements on the page. Each element gets a short **ref** (`"e1"`, `"e2"`, …) that you pass to `browser_interact` — you point at what you see instead of authoring a CSS selector. Refs stay valid until the next `browser_get_elements` call or the next page-changing interaction; a fresh look supersedes the old refs. The underlying selectors (including `>>>` crossings for open shadow roots and same-origin iframes) are resolved server-side, so they never need to appear in your calls.
+Discover interactive elements on the page. Each element gets a short **ref** (`"e1"`, `"e2"`, …) that you pass to `browser_interact` — you point at what you see instead of authoring a CSS selector. Refs stay valid while the page URL is unchanged; after a navigation, call `browser_get_elements` again. A fresh look supersedes the old refs, and the CLI (`agent elements`) shares the same refs. The underlying selectors (including `>>>` crossings for open shadow roots and same-origin iframes) are resolved server-side, so they never need to appear in your calls.
 
 | Parameter     | Type     | Required | Default | Description                                                                                                                 |
 | ------------- | -------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |

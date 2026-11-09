@@ -21,6 +21,8 @@ export interface ExecuteCommandInput {
   commandId?: string;
   type: CommandType;
   payload: Record<string, unknown>;
+  /** Task this step belongs to (e.g. "log in"); memory groups steps by it. */
+  intent?: string;
 }
 
 export class AgenticBrowserCore {
@@ -65,6 +67,7 @@ export class AgenticBrowserCore {
       commandId,
       type: input.type,
       payload: input.payload,
+      intent: input.intent,
     });
   }
 

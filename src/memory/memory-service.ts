@@ -35,6 +35,11 @@ export interface RecordExecutionInput {
   expectedOutcome: string;
   url?: string;
   selector?: string;
+  /**
+   * Run this step belongs to. A step from a new run starts the recipe over, so
+   * the recipe is always the latest run's steps in order. Defaults to commandId.
+   */
+  runId?: string;
 }
 
 /** Memory service configuration */
@@ -178,6 +183,7 @@ export class MemoryService {
         siteDomain: input.siteDomain,
         sitePathPattern: input.sitePathPattern,
         actionRecipe: [input.step],
+        recipeRunId: input.runId ?? input.commandId,
         expectedOutcome: input.expectedOutcome,
         confidence: 1,
         successCount: 1,
@@ -201,7 +207,7 @@ export class MemoryService {
       ...matched,
       useCount: matched.useCount + 1,
       evidence: [...matched.evidence.slice(-(MAX_EVIDENCE_RECORDS - 1)), evidence],
-      actionRecipe: this.mergeRecipe(matched.actionRecipe, input.step),
+      ...this.mergeRecipe(matched, input.step, input.runId ?? input.commandId),
       expectedOutcome: input.expectedOutcome,
     });
 
@@ -532,13 +538,16 @@ export class MemoryService {
     return undefined;
   }
 
-  private mergeRecipe(recipe: TaskStep[], step: TaskStep): TaskStep[] {
-    const exists = recipe.find(
-      (existing) => existing.summary === step.summary && existing.selector === step.selector,
-    );
-    if (exists) {
-      return recipe;
-    }
-    return [...recipe, step].slice(-MAX_RECIPE_STEPS);
+  /** Same run: append the step. New run: its first step replaces the old recipe. */
+  private mergeRecipe(
+    insight: TaskInsight,
+    step: TaskStep,
+    runId: string,
+  ): Pick<TaskInsight, "actionRecipe" | "recipeRunId"> {
+    if (insight.recipeRunId !== runId) return { actionRecipe: [step], recipeRunId: runId };
+    return {
+      actionRecipe: [...insight.actionRecipe, step].slice(-MAX_RECIPE_STEPS),
+      recipeRunId: runId,
+    };
   }
 }

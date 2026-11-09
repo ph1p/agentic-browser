@@ -112,6 +112,8 @@ export interface InteractiveElement {
   ariaLabel?: string;
   placeholder?: string;
   currentValue?: string;
+  /** Short handle ("e3") usable in place of the selector until the page changes. */
+  ref?: string;
 }
 
 export interface InteractiveElementsOptions {
@@ -781,6 +783,23 @@ interface DialogInfo {
 
 const CONTENT_TRUNCATION_HINT =
   'Use a CSS selector to scope the content, or use mode="summary" for a lower-token overview.';
+
+/**
+ * In-page visibility check shared by element discovery and cookie dismissal.
+ * Uses the element's own window so it also works inside same-origin iframes.
+ */
+const IN_PAGE_IS_VISIBLE = String.raw`
+      function isVisible(el) {
+        if (!el) return false;
+        const view = (el.ownerDocument && el.ownerDocument.defaultView) || window;
+        const style = view.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+          return false;
+        }
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      }
+`;
 
 const LOCATOR_RUNTIME_HELPERS = String.raw`
       const LOCATOR_SEPARATOR = ' >>> ';
@@ -3085,12 +3104,23 @@ export class ChromeCdpBrowserController implements BrowserController {
           current = parent;
         }
         // Prefer the shortest unique tail of the path: long nth-of-type chains
-        // cost tokens and break on the slightest layout change.
-        for (let size = 1; size < parts.length; size += 1) {
+        // cost tokens and break on the slightest layout change. A longer tail
+        // matches a subset of a shorter one, so uniqueness is monotonic in the
+        // tail length and a binary search finds the shortest unique tail.
+        let best = parts.join(' > ');
+        let lo = 1;
+        let hi = parts.length - 1;
+        while (lo <= hi) {
+          const size = (lo + hi) >> 1;
           const candidate = tryUniqueSelector(root, parts.slice(-size).join(' > '));
-          if (candidate) return candidate;
+          if (candidate) {
+            best = candidate;
+            hi = size - 1;
+          } else {
+            lo = size + 1;
+          }
         }
-        return parts.join(' > ');
+        return best;
       }
 
       function buildFallbackSelectors(root, path, el, primarySelector) {
@@ -3184,18 +3214,7 @@ export class ChromeCdpBrowserController implements BrowserController {
         }
       }
 
-      function viewForElement(el) {
-        return el.ownerDocument && el.ownerDocument.defaultView ? el.ownerDocument.defaultView : window;
-      }
-
-      function isVisible(el) {
-        const style = viewForElement(el).getComputedStyle(el);
-        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
-          return false;
-        }
-        const rect = el.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      }
+${IN_PAGE_IS_VISIBLE}
 
       function getText(el) {
         const ariaLabel = el.getAttribute('aria-label');
@@ -3287,17 +3306,33 @@ export class ChromeCdpBrowserController implements BrowserController {
         }
 
         totalFound += 1;
-        candidates.push({ root, path, el, role, visible, rank: rankElement(el, visible), order: candidates.length });
+        candidates.push({ root, path, el, role, visible, rank: rankElement(el, visible) });
       }
 
       // Lower rank sorts first: main content, then the rest of the page, then
       // site chrome (header, nav, footer), then hidden elements. Ties keep
       // document order.
+      // Region flags per ancestor, memoized so siblings share the walk up the
+      // tree instead of each element running three closest() scans.
+      const FOOTER = 1, MAIN = 2, CHROME = 4;
+      const regionMemo = new Map();
+      function regionFlags(el) {
+        if (!el) return 0;
+        let flags = regionMemo.get(el);
+        if (flags !== undefined) return flags;
+        flags = regionFlags(el.parentElement);
+        if (el.matches('footer, [role="contentinfo"]')) flags |= FOOTER;
+        if (el.matches('main, [role="main"], article')) flags |= MAIN;
+        if (el.matches('header, nav, [role="banner"], [role="navigation"]')) flags |= CHROME;
+        regionMemo.set(el, flags);
+        return flags;
+      }
       function rankElement(el, visible) {
         if (!visible) return 3;
-        if (el.closest('footer, [role="contentinfo"]')) return 2;
-        if (el.closest('main, [role="main"], article')) return 0;
-        if (el.closest('header, nav, [role="banner"], [role="navigation"]')) return 2;
+        const flags = regionFlags(el);
+        if (flags & FOOTER) return 2;
+        if (flags & MAIN) return 0;
+        if (flags & CHROME) return 2;
         return 1;
       }
 
@@ -3371,7 +3406,8 @@ export class ChromeCdpBrowserController implements BrowserController {
       }
 
       walkRoot(document, []);
-      candidates.sort((a, b) => a.rank - b.rank || a.order - b.order);
+      // Array sort is stable, so ties keep document order.
+      candidates.sort((a, b) => a.rank - b.rank);
       const results = candidates.slice(0, limit).map(buildEntry);
       const output = { elements: results, totalFound, truncated: totalFound > results.length };
       if (crossOriginFrames.length) output.crossOriginFrames = crossOriginFrames;
@@ -3486,11 +3522,7 @@ export class ChromeCdpBrowserController implements BrowserController {
 
   private async dismissViaDom(targetWsUrl: string): Promise<DismissCookieBannerResult> {
     const expression = `(() => {
-      function isVisible(el) {
-        if (!el) return false;
-        const style = getComputedStyle(el);
-        return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && el.offsetWidth > 0;
-      }
+${IN_PAGE_IS_VISIBLE}
 
       // Comprehensive CMP selectors (ordered by specificity/popularity)
       const selectors = [
@@ -3798,12 +3830,17 @@ export class ChromeCdpBrowserController implements BrowserController {
         'iframe[src*="consentmanager"]',
       ];
 
-      const AD_HOSTS = ['doubleclick.net', 'googlesyndication.com', 'googleadservices.com', 'adservice.google.'];
-      function isAdFrame(iframe) {
-        const id = iframe.id || '';
-        if (id.startsWith('goog_') || id.startsWith('google_ads_iframe')) return true;
-        const src = iframe.src || '';
-        return AD_HOSTS.some((host) => src.includes(host));
+      // Consent prompts overlay the page: the frame or a close ancestor is
+      // fixed/sticky or stacked high. In-flow frames (ads, embeds) are skipped.
+      function isOverlay(iframe) {
+        let el = iframe;
+        for (let depth = 0; el && el !== document.body && depth < 10; depth++) {
+          const style = getComputedStyle(el);
+          if (style.position === 'fixed' || style.position === 'sticky') return true;
+          if ((parseInt(style.zIndex, 10) || 0) >= 1000) return true;
+          el = el.parentElement;
+        }
+        return false;
       }
       function isShown(iframe) {
         const rect = iframe.getBoundingClientRect();
@@ -3826,7 +3863,7 @@ export class ChromeCdpBrowserController implements BrowserController {
       }
       function findFrame(sel) {
         for (const iframe of document.querySelectorAll(sel)) {
-          if (isAdFrame(iframe) || !isShown(iframe) || !srcKeywordMatches(iframe, sel)) continue;
+          if (!isShown(iframe) || !srcKeywordMatches(iframe, sel) || !isOverlay(iframe)) continue;
           return iframe;
         }
         return null;

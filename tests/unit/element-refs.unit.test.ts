@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ElementRefRegistry } from "../../src/mcp/element-refs.js";
+import { assignRefs, REF_PATTERN, StaleRefError } from "../../src/session/element-refs.js";
 import type { InteractiveElement } from "../../src/session/browser-controller.js";
 
 function el(overrides: Partial<InteractiveElement>): InteractiveElement {
@@ -16,59 +16,46 @@ function el(overrides: Partial<InteractiveElement>): InteractiveElement {
   };
 }
 
-describe("ElementRefRegistry", () => {
-  it("assigns sequential refs and resolves them to selectors + fallbacks", () => {
-    const reg = new ElementRefRegistry();
-    const { elements } = reg.assign("s1", [
+describe("assignRefs", () => {
+  it("assigns sequential refs and maps them to selectors + fallbacks", () => {
+    const { elements, byRef } = assignRefs([
       el({ selector: "#login", fallbackSelectors: [".login"], text: "Login" }),
       el({ selector: "#signup", text: "Sign up" }),
     ]);
 
     expect(elements.map((e) => e.ref)).toEqual(["e1", "e2"]);
-    expect(reg.resolve("s1", "e1")).toMatchObject({
-      selector: "#login",
-      fallbackSelectors: [".login"],
-      text: "Login",
-    });
-    expect(reg.resolve("s1", "e2")?.selector).toBe("#signup");
+    expect(byRef.e1).toEqual({ selector: "#login", fallbackSelectors: [".login"] });
+    expect(byRef.e2.selector).toBe("#signup");
   });
 
   it("does not assign a ref to selector-less elements", () => {
-    const reg = new ElementRefRegistry();
-    const { elements } = reg.assign("s1", [
+    const { elements, byRef } = assignRefs([
       el({ selector: "", text: "no selector" }),
       el({ selector: "#ok", text: "ok" }),
     ]);
 
-    expect(elements[0].ref).toBe("");
+    expect(elements[0].ref).toBeUndefined();
     expect(elements[1].ref).toBe("e1");
-    expect(reg.resolve("s1", "e1")?.selector).toBe("#ok");
+    expect(byRef.e1.selector).toBe("#ok");
   });
 
-  it("replaces prior refs on a fresh assignment (a new look supersedes the old)", () => {
-    const reg = new ElementRefRegistry();
-    reg.assign("s1", [el({ selector: "#old", text: "old" })]);
-    reg.assign("s1", [el({ selector: "#new", text: "new" })]);
+  it("records the frame the elements were listed in", () => {
+    const { byRef } = assignRefs([el({ selector: "#pay" })], "iframe#checkout");
+    expect(byRef.e1.frame).toBe("iframe#checkout");
+  });
+});
 
-    // e1 now points at the new page's element, not the old one
-    expect(reg.resolve("s1", "e1")?.selector).toBe("#new");
+describe("REF_PATTERN / StaleRefError", () => {
+  it("matches bare and @-prefixed refs only", () => {
+    expect(REF_PATTERN.exec("e3")?.[1]).toBe("e3");
+    expect(REF_PATTERN.exec("@e12")?.[1]).toBe("e12");
+    expect(REF_PATTERN.test("#e3")).toBe(false);
+    expect(REF_PATTERN.test("e3 > a")).toBe(false);
   });
 
-  it("isolates refs per session", () => {
-    const reg = new ElementRefRegistry();
-    reg.assign("s1", [el({ selector: "#s1", text: "s1" })]);
-    reg.assign("s2", [el({ selector: "#s2", text: "s2" })]);
-
-    expect(reg.resolve("s1", "e1")?.selector).toBe("#s1");
-    expect(reg.resolve("s2", "e1")?.selector).toBe("#s2");
-  });
-
-  it("returns undefined for unknown or cleared refs", () => {
-    const reg = new ElementRefRegistry();
-    reg.assign("s1", [el({ selector: "#a", text: "a" })]);
-
-    expect(reg.resolve("s1", "e99")).toBeUndefined();
-    reg.clear("s1");
-    expect(reg.resolve("s1", "e1")).toBeUndefined();
+  it("names the ref and how to refresh", () => {
+    const error = new StaleRefError("e7");
+    expect(error.message).toContain('"e7"');
+    expect(error.message).toContain("elements");
   });
 });

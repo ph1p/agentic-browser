@@ -12,7 +12,7 @@ import {
   compactMemoryResults,
   compactPageContent,
 } from "./response-helpers.js";
-import { ElementRefRegistry } from "./element-refs.js";
+import { StaleRefError } from "../session/element-refs.js";
 import { createSessionResolver } from "./session-resolver.js";
 
 function readPackageVersion(): string {
@@ -69,8 +69,6 @@ function genId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-const refs = new ElementRefRegistry();
-
 /**
  * Discover interactive elements, assign fresh refs for the session, and return
  * the compact agent-facing view (refs + role/text, no raw selectors). This is
@@ -94,9 +92,8 @@ async function snapshotElements(
     selector: opts.selector,
     roles: opts.roles,
   });
-  const { elements } = refs.assign(sessionId, result.elements);
   return compactInteractiveElementsResult(
-    elements,
+    result.elements,
     { totalFound: result.totalFound, truncated: result.truncated },
     visibleOnly,
   );
@@ -109,6 +106,13 @@ async function snapshotElements(
 async function resolveSession(sessionId?: string): Promise<string> {
   return sessionResolver.resolve(sessionId);
 }
+
+const intentParam = z
+  .string()
+  .optional()
+  .describe(
+    'Task this step belongs to, in your own words (e.g. "log in", "search products"). Steps sharing an intent are remembered together and returned as a recipe by browser_search_memory',
+  );
 
 const server = new McpServer({
   name: "agentic-browser",
@@ -133,12 +137,7 @@ server.tool(
   "Navigate the browser to a URL. A session is auto-started if needed.",
   {
     url: z.string().describe("The URL to navigate to"),
-    intent: z
-      .string()
-      .optional()
-      .describe(
-        'Task this step belongs to, in your own words (e.g. "log in", "search products"). Steps sharing an intent are remembered together and returned as a recipe by browser_search_memory',
-      ),
+    intent: intentParam,
     sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
   },
   async ({ url, intent, sessionId }) => {
@@ -147,7 +146,8 @@ server.tool(
       sessionId: sid,
       commandId: genId("nav"),
       type: "navigate",
-      payload: intent ? { url, intent } : { url },
+      payload: { url },
+      intent,
     });
     let cookieBanner: { dismissed: boolean; method?: string; detail?: string } | undefined;
     if (result.resultStatus === "success") {
@@ -234,12 +234,7 @@ server.tool(
       .number()
       .optional()
       .describe('Timeout in milliseconds (for "waitFor" action, default 4000)'),
-    intent: z
-      .string()
-      .optional()
-      .describe(
-        'Task this step belongs to, in your own words (e.g. "log in", "search products"). Steps sharing an intent are remembered together and returned as a recipe by browser_search_memory',
-      ),
+    intent: intentParam,
     sessionId: z.string().optional().describe("Session ID (auto-resolved if omitted)"),
   },
   async ({
@@ -258,33 +253,12 @@ server.tool(
   }) => {
     const sid = await resolveSession(sessionId);
     const payload: Record<string, unknown> = { action };
-    if (intent) payload.intent = intent;
 
-    // Resolve a ref to its stored selector target. An explicit selector wins if
-    // both are given; a ref that no longer resolves is reported clearly rather
-    // than silently acting on nothing.
-    if (!selector && ref) {
-      const resolved = refs.resolve(sid, ref);
-      if (!resolved) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                resultStatus: "failed",
-                resultMessage: `Unknown or stale ref "${ref}". Call browser_get_elements to refresh element refs.`,
-                errorCode: "SELECTOR_NOT_FOUND" satisfies ErrorCode,
-              }),
-            },
-          ],
-        };
-      }
-      payload.selector = resolved.selector;
-      if (resolved.fallbackSelectors) payload.fallbackSelectors = resolved.fallbackSelectors;
-    } else {
-      if (selector) payload.selector = selector;
-      if (fallbackSelectors) payload.fallbackSelectors = fallbackSelectors;
-    }
+    // An explicit selector wins over a ref; the core resolves refs to their
+    // stored selector and rejects ones taken on another page.
+    const target = selector ?? ref;
+    if (target) payload.selector = target;
+    if (fallbackSelectors) payload.fallbackSelectors = fallbackSelectors;
 
     if (text) payload.text = text;
     if (key) payload.key = key;
@@ -292,12 +266,30 @@ server.tool(
     if (scrollX !== undefined) payload.scrollX = scrollX;
     if (scrollY !== undefined) payload.scrollY = scrollY;
     if (timeoutMs) payload.timeoutMs = timeoutMs;
-    const result = await getCore().runCommand({
-      sessionId: sid,
-      commandId: genId("int"),
-      type: "interact",
-      payload,
-    });
+    let result: Awaited<ReturnType<AgenticBrowserCore["runCommand"]>>;
+    try {
+      result = await getCore().runCommand({
+        sessionId: sid,
+        commandId: genId("int"),
+        type: "interact",
+        payload,
+        intent,
+      });
+    } catch (error) {
+      if (!(error instanceof StaleRefError)) throw error;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              resultStatus: "failed",
+              resultMessage: error.message,
+              errorCode: "SELECTOR_NOT_FOUND" satisfies ErrorCode,
+            }),
+          },
+        ],
+      };
+    }
     // Get current URL — especially useful after clicks that trigger navigation
     let currentUrl: string | undefined;
     try {
@@ -494,7 +486,6 @@ server.tool(
       };
     }
     await getCore().stopSession(sid);
-    refs.clear(sid);
     if (sessionResolver.current() === sid) sessionResolver.clear();
     return {
       content: [{ type: "text" as const, text: JSON.stringify({ ok: true, stopped: sid }) }],

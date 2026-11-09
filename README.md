@@ -144,7 +144,7 @@ agentic-browser agent elements --roles button,link,input --visible-only --limit 
 agentic-browser agent elements --selector "#main-content"
 ```
 
-Returns a JSON array of elements with selectors and fallback selectors usable in the typed agent commands like `agent click`, `agent type`, and `agent select`. Main-content elements come first; header, nav and footer links come last. Each element also gets a short ref (`e1`, `e2`, ...): `agent click e3` resolves it to the stored selector. Refs are valid until the next `agent navigate`:
+Returns a JSON array of elements with selectors and fallback selectors usable in the typed agent commands like `agent click`, `agent type`, and `agent select`. Main-content elements come first; header, nav and footer links come last. Each element also gets a short ref (`e1`, `e2`, ...): `agent click e3` resolves it to the stored selector. Refs stay valid while the page URL is unchanged; after navigating, run `agent elements` again:
 
 ```json
 {
@@ -275,7 +275,7 @@ agentic-browser memory:stats
 
 1. `agent start` — launch Chrome and persist session.
 2. `agent elements` — discover what's on the page.
-3. `agent navigate`, `agent click`, `agent type`, `agent select`, and related typed commands — execute actions using element refs or selectors. Pass `--intent "<task>"` to group the steps of one task in memory.
+3. `agent navigate`, `agent click`, `agent type`, `agent select`, and related typed commands — execute actions using element refs or selectors. Pass `--intent "<task>"` (an `agent`-level option, accepted before or after the subcommand) to group the steps of one task in memory. Consecutive steps with the same intent form one run; a new run replaces the stored recipe, so it always holds the latest run's steps in order.
 4. `agent content` — read page content after actions.
 5. `agent memory-search "<task>"` — matching is fuzzy; results include a `recipe` with the steps that worked last time (`needsInput` marks typed text that was redacted).
 6. `agent stop` — terminate when done.
