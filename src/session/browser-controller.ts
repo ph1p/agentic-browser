@@ -9,6 +9,32 @@ import WebSocket from "ws";
 import { ensurePrivateDir } from "../lib/secure-fs.js";
 import { discoverChrome } from "./chrome-launcher.js";
 
+/**
+ * Detect a running Chrome that owns `profileDir`. On macOS/Linux `SingletonLock`
+ * is a dangling symlink to `<hostname>-<pid>`, so existsSync (which follows
+ * symlinks) cannot see it; inspect the link itself and probe the pid.
+ */
+export function isProfileLocked(profileDir: string): { locked: boolean; pid?: number } {
+  const lockFile = path.join(profileDir, "SingletonLock");
+  let target: string;
+  try {
+    const st = fs.lstatSync(lockFile);
+    if (!st.isSymbolicLink()) return { locked: true }; // unknown format: be conservative
+    target = fs.readlinkSync(lockFile);
+  } catch {
+    return { locked: false }; // ENOENT
+  }
+  const pid = Number(target.slice(target.lastIndexOf("-") + 1));
+  if (!Number.isInteger(pid) || pid <= 0) return { locked: true };
+  try {
+    process.kill(pid, 0);
+    return { locked: true, pid };
+  } catch (e) {
+    // EPERM: process exists under another user. ESRCH: stale lock, Chrome clears it.
+    return { locked: (e as NodeJS.ErrnoException).code === "EPERM", pid };
+  }
+}
+
 export type InteractAction =
   | "click"
   | "type"
@@ -1312,9 +1338,10 @@ export class ChromeCdpBrowserController implements BrowserController {
     // Chrome locks its profile with a "SingletonLock" file. If present, another
     // Chrome instance owns this profile and a new launch will silently fail.
     const lockFile = path.join(profileDir, "SingletonLock");
-    if (fs.existsSync(lockFile)) {
+    const lock = isProfileLocked(profileDir);
+    if (lock.locked) {
       throw new Error(
-        `Chrome profile is already in use (lock file exists: ${lockFile}). ` +
+        `Chrome profile is already in use (lock file exists: ${lockFile}${lock.pid ? `, pid ${lock.pid}` : ""}). ` +
           "Quit the running Chrome instance first, or use --cdp-url to connect to it instead.",
       );
     }
