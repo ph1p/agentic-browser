@@ -222,6 +222,116 @@ describe("ChromeCdpBrowserController connection reuse", () => {
     ]);
   });
 
+  describe("click navigation detection", () => {
+    class EventConnection extends FakeConnection {
+      readonly log: string[] = [];
+      private readonly handlers = new Map<string, Set<(params: unknown) => void>>();
+
+      constructor(onRelease: (emit: (method: string, params: unknown) => void) => void) {
+        super({
+          sendHandler: (method, params) => {
+            if (method === "Runtime.evaluate") return { result: { value: { x: 10, y: 20 } } };
+            if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+            if (method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased") {
+              onRelease((m, p) => this.emit(m, p));
+            }
+            return {};
+          },
+        });
+      }
+
+      emit(method: string, params: unknown): void {
+        this.log.push(method);
+        for (const handler of this.handlers.get(method) ?? []) handler(params);
+      }
+
+      waitForEventMatching<T = unknown>(
+        method: string,
+        predicate: (params: T) => boolean,
+        timeoutMs = 5000,
+      ): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+          const set = this.handlers.get(method) ?? new Set<(params: unknown) => void>();
+          this.handlers.set(method, set);
+          const handler = (params: unknown) => {
+            if (!predicate(params as T)) return;
+            clearTimeout(timer);
+            set.delete(handler);
+            resolve(params as T);
+          };
+          const timer = setTimeout(() => {
+            set.delete(handler);
+            reject(new Error(`Timed out waiting for ${method}`));
+          }, timeoutMs);
+          set.add(handler);
+        });
+      }
+    }
+
+    it("waits for navigation and load after the main frame starts loading", async () => {
+      let loadEmittedAt = 0;
+      const conn = new EventConnection((emit) => {
+        setTimeout(() => emit("Page.frameStartedLoading", { frameId: "main" }), 20);
+        setTimeout(() => emit("Page.frameNavigated", { frame: { id: "main" } }), 60);
+        setTimeout(() => {
+          loadEmittedAt = Date.now();
+          emit("Page.loadEventFired", {});
+        }, 120);
+      });
+      const controller = new ChromeCdpBrowserController("/tmp", async () => conn);
+
+      const result = await controller.interact("ws://nav-click", {
+        action: "click",
+        selector: "#link",
+      });
+      const resolvedAt = Date.now();
+
+      expect(result).toBe("clicked");
+      expect(conn.log).toEqual([
+        "Page.frameStartedLoading",
+        "Page.frameNavigated",
+        "Page.loadEventFired",
+      ]);
+      expect(loadEmittedAt).toBeGreaterThan(0);
+      expect(resolvedAt).toBeGreaterThanOrEqual(loadEmittedAt);
+    });
+
+    it("resolves after the start window when nothing navigates", async () => {
+      const conn = new EventConnection(() => {});
+      const controller = new ChromeCdpBrowserController("/tmp", async () => conn);
+
+      const startedAt = Date.now();
+      const result = await controller.interact("ws://nav-none", {
+        action: "click",
+        selector: "#button",
+      });
+      const elapsed = Date.now() - startedAt;
+
+      expect(result).toBe("clicked");
+      expect(elapsed).toBeGreaterThanOrEqual(450);
+      expect(elapsed).toBeLessThan(2000);
+    });
+
+    it("ignores subframe loads", async () => {
+      const conn = new EventConnection((emit) => {
+        setTimeout(() => emit("Page.frameStartedLoading", { frameId: "child" }), 20);
+      });
+      const controller = new ChromeCdpBrowserController("/tmp", async () => conn);
+
+      const startedAt = Date.now();
+      const result = await controller.interact("ws://nav-child", {
+        action: "click",
+        selector: "#ad",
+      });
+      const elapsed = Date.now() - startedAt;
+
+      expect(result).toBe("clicked");
+      expect(elapsed).toBeGreaterThanOrEqual(450);
+      expect(elapsed).toBeLessThan(2000);
+      expect(conn.log).toEqual(["Page.frameStartedLoading"]);
+    });
+  });
+
   it("uses CDP text insertion for type interactions", async () => {
     const conn = new FakeConnection({
       sendHandler(method) {
