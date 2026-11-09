@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import { createMockAgenticBrowserCore } from "../../src/cli/runtime.js";
+import { createMockAgenticBrowserCore, type AgenticBrowserCore } from "../../src/cli/runtime.js";
 
 /**
  * Tests that the MCP server's tool handlers work correctly by exercising
@@ -11,11 +11,19 @@ import { createMockAgenticBrowserCore } from "../../src/cli/runtime.js";
  * response transformations applied in the MCP layer.
  */
 describe("mcp server tool handlers", () => {
+  const cores: AgenticBrowserCore[] = [];
+
+  afterEach(async () => {
+    await Promise.all(cores.splice(0).map((core) => core.dispose()));
+  });
+
   function createCore() {
-    return createMockAgenticBrowserCore({
+    const core = createMockAgenticBrowserCore({
       ...process.env,
       AGENTIC_BROWSER_DIR: `/tmp/agentic-browser-mcp-${Math.random().toString(16).slice(2)}`,
     });
+    cores.push(core);
+    return core;
   }
 
   it("full tool lifecycle: start → navigate → elements → content → memory → stop", async () => {
