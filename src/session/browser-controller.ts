@@ -60,6 +60,13 @@ export interface InteractPayload {
   scrollX?: number;
   scrollY?: number;
   timeoutMs?: number;
+  /**
+   * Locator of an iframe to run the action in. Needed for cross-origin frames,
+   * which `>>>` cannot pierce from the page. Composed selectors like
+   * `iframe#consent >>> button` are split automatically when the frame is
+   * cross-origin, so this is only required for explicit control.
+   */
+  frame?: string;
 }
 
 export type PageContentMode = "title" | "text" | "html" | "a11y" | "summary";
@@ -112,12 +119,40 @@ export interface InteractiveElementsOptions {
   visibleOnly?: boolean;
   limit?: number;
   selector?: string;
+  /** Case-insensitive substring filter on the element's href. */
+  href?: string;
+  /** Case-insensitive substring filter on text, aria-label, placeholder, value or title. */
+  text?: string;
+  /** Discover elements inside this iframe (works for cross-origin frames). */
+  frame?: string;
+}
+
+/** An iframe whose content discovery could not enter from the page context. */
+export interface CrossOriginFrameInfo {
+  selector: string;
+  title?: string;
+  src?: string;
 }
 
 export interface InteractiveElementsResult {
   elements: InteractiveElement[];
   totalFound: number;
   truncated: boolean;
+  /** Cross-origin iframes skipped by discovery — pass one as `frame` to look inside. */
+  crossOriginFrames?: CrossOriginFrameInfo[];
+}
+
+export interface PageState {
+  url: string;
+  title: string;
+  readyState: string;
+}
+
+export interface TabInfo {
+  id: string;
+  url: string;
+  title: string;
+  targetWsUrl: string;
 }
 
 export interface LaunchOptions {
@@ -129,7 +164,7 @@ export interface LaunchOptions {
 
 export interface DismissCookieBannerResult {
   dismissed: boolean;
-  method?: "a11y" | "selector" | "text";
+  method?: "a11y" | "selector" | "text" | "iframe" | "iframe-text";
   detail?: string;
 }
 
@@ -175,6 +210,11 @@ export interface BrowserController {
   dismissCookieBanner(targetWsUrl: string): Promise<DismissCookieBannerResult>;
   screenshot(targetWsUrl: string, options?: ScreenshotOptions): Promise<ScreenshotResult>;
   getCurrentUrl(targetWsUrl: string): Promise<string>;
+  getPageState(targetWsUrl: string): Promise<PageState>;
+  listTabs(cdpUrl: string): Promise<TabInfo[]>;
+  openTab(cdpUrl: string): Promise<TabInfo>;
+  activateTab(cdpUrl: string, tabId: string): Promise<void>;
+  closeTab(cdpUrl: string, tabId: string): Promise<void>;
   terminate(pid: number): void;
   closeConnection?(targetWsUrl: string): void;
   dispose?(): void;
@@ -183,6 +223,8 @@ export interface BrowserController {
 interface CdpTarget {
   id: string;
   type: string;
+  url?: string;
+  title?: string;
   webSocketDebuggerUrl?: string;
 }
 
@@ -633,6 +675,37 @@ async function initTarget(targetWsUrl: string, userAgent?: string): Promise<stri
   }
 }
 
+interface FrameScope {
+  /** Evaluates inside the frame (Runtime.evaluate lands in the frame's context). */
+  client: CdpClient;
+  /** Frame viewport origin in main-frame CSS pixels — read after in-frame scrolling. */
+  getOffset(): Promise<{ x: number; y: number }>;
+  release(): void;
+}
+
+/** Called on the iframe element: origin of its content box in top-level viewport coordinates. */
+const FRAME_CONTENT_OFFSET_FUNCTION = `function () {
+  const rect = this.getBoundingClientRect();
+  const style = getComputedStyle(this);
+  let x = rect.left + this.clientLeft + (parseFloat(style.paddingLeft) || 0);
+  let y = rect.top + this.clientTop + (parseFloat(style.paddingTop) || 0);
+  let doc = this.ownerDocument;
+  while (doc) {
+    let frameElement = null;
+    try {
+      frameElement = doc.defaultView && doc.defaultView.frameElement;
+    } catch {
+      frameElement = null;
+    }
+    if (!frameElement) break;
+    const frameRect = frameElement.getBoundingClientRect();
+    x += frameRect.left + frameElement.clientLeft;
+    y += frameRect.top + frameElement.clientTop;
+    doc = frameElement.ownerDocument;
+  }
+  return { x, y };
+}`;
+
 interface PageEvaluateResult<V> {
   result: { value?: V; objectId?: string; subtype?: string };
   exceptionDetails?: {
@@ -770,6 +843,82 @@ const LOCATOR_RUNTIME_HELPERS = String.raw`
         return false;
       }
 
+      const TEXT_INTERACTIVE_SELECTOR = [
+        'a[href]', 'button', 'input[type="button"]', 'input[type="submit"]', 'input[type="reset"]',
+        '[role="button"]', '[role="link"]', '[role="menuitem"]', '[role="tab"]', '[role="option"]',
+        '[role="checkbox"]', '[role="radio"]', '[role="switch"]', 'summary', 'label', 'option',
+        '[onclick]', '[tabindex]'
+      ].join(',');
+
+      function normalizeText(value) {
+        return String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+      }
+
+      function textLabels(el, useInnerText) {
+        const labels = [];
+        const body = useInnerText && typeof el.innerText === 'string' ? el.innerText : el.textContent;
+        if (body) labels.push(normalizeText(body));
+        for (const attr of ['aria-label', 'title', 'alt', 'placeholder']) {
+          const value = el.getAttribute && el.getAttribute(attr);
+          if (value) labels.push(normalizeText(value));
+        }
+        if (el.tagName && el.tagName.toLowerCase() === 'input' && typeof el.value === 'string' && el.value) {
+          labels.push(normalizeText(el.value));
+        }
+        return labels;
+      }
+
+      function hasBox(el) {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      }
+
+      // text=Foo matches by visible text (exact first, then substring);
+      // text="Foo" matches exactly. Interactive and visible elements win.
+      function queryByText(root, query) {
+        let raw = String(query).trim();
+        let exactOnly = false;
+        if (raw.length >= 2 && (raw[0] === '"' || raw[0] === "'") && raw[raw.length - 1] === raw[0]) {
+          raw = raw.slice(1, -1);
+          exactOnly = true;
+        }
+        const needle = normalizeText(raw);
+        if (!needle) return null;
+
+        function pick(candidates, useInnerText, preferSmallest) {
+          let best = null;
+          let bestScore = -1;
+          let bestSize = Infinity;
+          for (const el of candidates) {
+            const labels = textLabels(el, useInnerText);
+            let score = -1;
+            if (labels.some((label) => label === needle)) score = 2;
+            else if (!exactOnly && labels.some((label) => label.includes(needle))) score = 1;
+            if (score < 0) continue;
+            if (hasBox(el)) score += 4;
+            const size = preferSmallest ? (el.textContent || '').length : 0;
+            if (score > bestScore || (score === bestScore && size < bestSize)) {
+              best = el;
+              bestScore = score;
+              bestSize = size;
+            }
+          }
+          return best;
+        }
+
+        // On equal score the element with the least text is the most specific match.
+        const interactive = pick(root.querySelectorAll(TEXT_INTERACTIVE_SELECTOR), true, true);
+        if (interactive) return interactive;
+        return pick(root.querySelectorAll(root.nodeType === 9 ? 'body *' : '*'), false, true);
+      }
+
+      function querySegment(root, part) {
+        if (/^text=/i.test(part)) {
+          return queryByText(root, part.slice(5));
+        }
+        return root.querySelector(part);
+      }
+
       function resolveLocator(locator) {
         const parts = splitLocator(locator);
         if (parts.length === 0) return null;
@@ -777,7 +926,7 @@ const LOCATOR_RUNTIME_HELPERS = String.raw`
         let root = document;
         let element = null;
         for (let index = 0; index < parts.length; index += 1) {
-          element = root.querySelector(parts[index]);
+          element = querySegment(root, parts[index]);
           if (!element) return null;
 
           if (index === parts.length - 1) {
@@ -833,7 +982,7 @@ const LOCATOR_RUNTIME_HELPERS = String.raw`
         if (lastError) {
           throw lastError;
         }
-        throw new Error('Selector not found');
+        throw new Error('Element not found: ' + locators.join(' | '));
       }
 
       function ensureInView(element) {
@@ -1433,6 +1582,228 @@ export class ChromeCdpBrowserController implements BrowserController {
     }
   }
 
+  /**
+   * Split a composed locator at the first iframe whose document the page
+   * cannot reach (cross-origin). Returns null when no such boundary exists.
+   */
+  private async splitAtCrossOriginFrame(
+    conn: CdpClient,
+    locator: string,
+  ): Promise<{ frame: string; rest: string } | null> {
+    if (!locator.includes(">>>")) return null;
+    const result = await evaluateOnPage<{ frame: string; rest: string } | null>(conn, {
+      expression: buildLocatorRuntimeExpression(
+        "locator",
+        locator,
+        `
+      const parts = splitLocator(locator);
+      let root = document;
+      for (let index = 0; index < parts.length - 1; index += 1) {
+        const el = querySegment(root, parts[index]);
+        if (!el) return null;
+        const tag = el.tagName ? el.tagName.toLowerCase() : '';
+        if (tag === 'iframe' || tag === 'frame') {
+          let doc = null;
+          try {
+            doc = el.contentDocument;
+          } catch {
+            doc = null;
+          }
+          if (!doc) {
+            return {
+              frame: parts.slice(0, index + 1).join(LOCATOR_SEPARATOR),
+              rest: parts.slice(index + 1).join(LOCATOR_SEPARATOR),
+            };
+          }
+          root = doc;
+          continue;
+        }
+        if (el.shadowRoot) {
+          root = el.shadowRoot;
+          continue;
+        }
+        return null;
+      }
+      return null;
+`,
+      ),
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    return result.result.value ?? null;
+  }
+
+  /**
+   * Work out which frame a payload targets. An explicit `frame` wins;
+   * otherwise a composed selector crossing a cross-origin iframe is split.
+   */
+  private async resolveFrameTarget(
+    conn: CdpClient,
+    payload: InteractPayload,
+  ): Promise<{ frame?: string; payload: InteractPayload }> {
+    if (payload.frame) return { frame: payload.frame, payload };
+    if (!payload.selector) return { payload };
+    const split = await this.splitAtCrossOriginFrame(conn, payload.selector);
+    if (!split) return { payload };
+    const prefix = split.frame + " >>> ";
+    const fallbackSelectors = payload.fallbackSelectors?.map((fallback) =>
+      fallback.startsWith(prefix) ? fallback.slice(prefix.length) : fallback,
+    );
+    return {
+      frame: split.frame,
+      payload: { ...payload, selector: split.rest, fallbackSelectors },
+    };
+  }
+
+  /**
+   * Open an evaluation scope inside an iframe. Same-process frames get an
+   * isolated world on the page connection; out-of-process (cross-site) frames
+   * get their own CDP connection to the frame target. Input events still go
+   * to the page connection, translated by `getOffset()`.
+   */
+  private async openFrameScope(
+    conn: CdpClient,
+    targetWsUrl: string,
+    frameLocator: string,
+  ): Promise<FrameScope> {
+    const located = await evaluateOnPage<unknown>(conn, {
+      expression: buildLocatorRuntimeExpression(
+        "frameLocator",
+        frameLocator,
+        `
+      const el = resolveLocator(frameLocator);
+      if (!el) throw new Error('Frame not found: ' + frameLocator);
+      const tag = el.tagName ? el.tagName.toLowerCase() : '';
+      if (tag !== 'iframe' && tag !== 'frame') {
+        throw new Error('Frame locator does not match an iframe: ' + frameLocator);
+      }
+      ensureInView(el);
+      return el;
+`,
+      ),
+      awaitPromise: true,
+    });
+    const objectId = located.result.objectId;
+    if (!objectId) throw new Error(`Frame not found: ${frameLocator}`);
+    const releaseObject = () => {
+      conn.send("Runtime.releaseObject", { objectId }).catch(() => {});
+    };
+
+    try {
+      const described = await conn.send<{ node?: { frameId?: string } }>("DOM.describeNode", {
+        objectId,
+      });
+      const frameId = described.node?.frameId;
+      if (!frameId) throw new Error(`Frame has no document yet: ${frameLocator}`);
+
+      const getOffset = async (): Promise<{ x: number; y: number }> => {
+        const offset = await conn.send<{ result: { value?: { x: number; y: number } } }>(
+          "Runtime.callFunctionOn",
+          {
+            objectId,
+            functionDeclaration: FRAME_CONTENT_OFFSET_FUNCTION,
+            returnByValue: true,
+          },
+        );
+        return offset.result.value ?? { x: 0, y: 0 };
+      };
+
+      let world: { executionContextId?: number } | null = null;
+      try {
+        world = await conn.send<{ executionContextId?: number }>("Page.createIsolatedWorld", {
+          frameId,
+          worldName: "agentic-browser",
+        });
+      } catch {
+        world = null; // out-of-process frame — the page session does not own it
+      }
+
+      if (world?.executionContextId !== undefined) {
+        const contextId = world.executionContextId;
+        const client: CdpClient = {
+          send: (method, params, timeoutMs) =>
+            conn.send(
+              method,
+              method === "Runtime.evaluate" ? { ...params, contextId } : params,
+              timeoutMs,
+            ),
+          waitForEvent: (method, timeoutMs) => conn.waitForEvent(method, timeoutMs),
+          close: () => {},
+        };
+        return { client, getOffset, release: releaseObject };
+      }
+
+      const frameWsUrl = targetWsUrl.replace(
+        /\/devtools\/page\/[^/?#]+/,
+        `/devtools/page/${frameId}`,
+      );
+      if (frameWsUrl === targetWsUrl) {
+        throw new Error(`Cannot derive a frame target URL from ${targetWsUrl}`);
+      }
+      let frameConn: CdpClient | undefined;
+      let lastError: unknown;
+      // Chrome creates DevTools hosts for OOPIF targets lazily: /devtools/page/<frameId>
+      // answers HTTP 500 until /json/list has enumerated them, so list and retry.
+      const listUrl = targetWsUrl.replace(/^ws(s?):\/\/([^/]+)\/.*$/, "http$1://$2/json/list");
+      for (let attempt = 0; attempt < 4 && !frameConn; attempt++) {
+        if (attempt > 0) {
+          await getJson<unknown>(listUrl).catch(() => {});
+          if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+        }
+        try {
+          frameConn = await this.connectionFactory(frameWsUrl);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (!frameConn) {
+        throw new Error(
+          `Unable to attach to cross-origin frame ${frameLocator}: ${(lastError as Error)?.message}`,
+          { cause: lastError },
+        );
+      }
+      const attached = frameConn;
+      return {
+        client: attached,
+        getOffset,
+        release: () => {
+          releaseObject();
+          try {
+            attached.close();
+          } catch {
+            // ignore close failures
+          }
+        },
+      };
+    } catch (error) {
+      releaseObject();
+      throw error;
+    }
+  }
+
+  /** Run `fn` against the frame a payload targets (the page itself when none). */
+  private async withFrameScope<T>(
+    conn: CdpClient,
+    targetWsUrl: string,
+    payload: InteractPayload,
+    fn: (
+      client: CdpClient,
+      scoped: InteractPayload,
+      getOffset: () => Promise<{ x: number; y: number }>,
+    ) => Promise<T>,
+  ): Promise<T> {
+    const target = await this.resolveFrameTarget(conn, payload);
+    if (!target.frame) {
+      return await fn(conn, payload, async () => ({ x: 0, y: 0 }));
+    }
+    const scope = await this.openFrameScope(conn, targetWsUrl, target.frame);
+    try {
+      return await fn(scope.client, { ...target.payload, frame: undefined }, scope.getOffset);
+    } finally {
+      scope.release();
+    }
+  }
+
   async navigate(targetWsUrl: string, url: string): Promise<string> {
     return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
@@ -1867,47 +2238,58 @@ export class ChromeCdpBrowserController implements BrowserController {
         targetWsUrl,
         async (conn) => {
           await this.ensureEnabled(targetWsUrl);
+          // Evaluation runs in the target frame; input events always go to the
+          // page connection (Chrome routes them into out-of-process frames).
+          return await this.withFrameScope(
+            conn,
+            targetWsUrl,
+            payload,
+            async (client, scoped, getOffset) => {
+              if (scoped.action === "click") {
+                const local = await this.preparePointerTarget(client, scoped);
+                const offset = await getOffset();
+                const nav = await this.armMainFrameNavigationWait(conn);
+                await this.dispatchMouseClick(conn, local.x + offset.x, local.y + offset.y);
+                await nav.result;
 
-          if (payload.action === "click") {
-            const point = await this.preparePointerTarget(conn, payload);
-            const nav = await this.armMainFrameNavigationWait(conn);
-            await this.dispatchMouseClick(conn, point.x, point.y);
-            await nav.result;
+                return "clicked";
+              }
 
-            return "clicked";
-          }
+              if (scoped.action === "hover") {
+                const local = await this.preparePointerTarget(client, scoped);
+                const offset = await getOffset();
+                await conn.send("Input.dispatchMouseEvent", {
+                  type: "mouseMoved",
+                  x: local.x + offset.x,
+                  y: local.y + offset.y,
+                  button: "none",
+                });
+                return "hovered";
+              }
 
-          if (payload.action === "hover") {
-            const point = await this.preparePointerTarget(conn, payload);
-            await conn.send("Input.dispatchMouseEvent", {
-              type: "mouseMoved",
-              x: point.x,
-              y: point.y,
-              button: "none",
-            });
-            return "hovered";
-          }
+              if (scoped.action === "press") {
+                await this.focusTarget(client, scoped);
+                await this.dispatchKeyPress(conn, scoped.key);
+                return "pressed";
+              }
 
-          if (payload.action === "press") {
-            await this.focusTarget(conn, payload);
-            await this.dispatchKeyPress(conn, payload.key);
-            return "pressed";
-          }
-
-          const preparation = await this.prepareTypeTarget(conn, payload);
-          if (preparation === "ready") {
-            await conn.send("Input.insertText", { text: payload.text ?? "" });
-          }
-          return "typed";
+              const preparation = await this.prepareTypeTarget(client, scoped);
+              if (preparation === "ready") {
+                await conn.send("Input.insertText", { text: scoped.text ?? "" });
+              }
+              return "typed";
+            },
+          );
         },
         "connection",
       );
     }
 
-    const expression = buildLocatorRuntimeExpression(
-      "payload",
-      payload,
-      `
+    const buildExpression = (scoped: InteractPayload) =>
+      buildLocatorRuntimeExpression(
+        "payload",
+        scoped,
+        `
       if (payload.action === 'waitFor') {
         const timeout = payload.timeoutMs ?? 2000;
         const started = Date.now();
@@ -1952,7 +2334,7 @@ export class ChromeCdpBrowserController implements BrowserController {
       }
       throw new Error('Unsupported interact action');
 `,
-    );
+      );
 
     // scroll/select/toggle mutate the page; retry only on a closed socket so a
     // mid-flight drop can't re-apply the mutation.
@@ -1960,12 +2342,24 @@ export class ChromeCdpBrowserController implements BrowserController {
       targetWsUrl,
       async (conn) => {
         await this.ensureEnabled(targetWsUrl);
-        const result = await evaluateOnPage<string>(conn, {
-          expression,
-          returnByValue: true,
-          awaitPromise: true,
+        return await this.withFrameScope(conn, targetWsUrl, payload, async (client, scoped) => {
+          // Evaluate the caller's code as its own script: new Function() inside the
+          // locator runtime would be blocked by pages whose CSP forbids unsafe-eval.
+          const expression =
+            scoped.action === "evaluate"
+              ? `(async () => {
+  const __agenticResult = await (${scoped.text ?? "undefined"}
+  );
+  return typeof __agenticResult === 'string' ? __agenticResult : JSON.stringify(__agenticResult);
+})()`
+              : buildExpression(scoped);
+          const result = await evaluateOnPage<string>(client, {
+            expression,
+            returnByValue: true,
+            awaitPromise: true,
+          });
+          return result.result.value ?? "";
         });
-        return result.result.value ?? "";
       },
       "connection",
     );
@@ -2009,6 +2403,84 @@ export class ChromeCdpBrowserController implements BrowserController {
       });
       return result.result.value ?? "";
     });
+  }
+
+  async getPageState(targetWsUrl: string): Promise<PageState> {
+    return await this.withRetry(targetWsUrl, async (conn) => {
+      const result = await evaluateOnPage<PageState>(conn, {
+        expression:
+          "({ url: location.href, title: document.title, readyState: document.readyState })",
+        returnByValue: true,
+      });
+      return result.result.value ?? { url: "", title: "", readyState: "loading" };
+    });
+  }
+
+  async listTabs(cdpUrl: string): Promise<TabInfo[]> {
+    const targets = await getJson<CdpTarget[]>(`${cdpUrl}/json/list`);
+    return targets
+      .filter((target) => target.type === "page" && target.webSocketDebuggerUrl)
+      .map((target) => ({
+        id: target.id,
+        url: target.url ?? "",
+        title: target.title ?? "",
+        targetWsUrl: target.webSocketDebuggerUrl!,
+      }));
+  }
+
+  async openTab(cdpUrl: string): Promise<TabInfo> {
+    const endpoint = `${cdpUrl}/json/new?${encodeURIComponent("about:blank")}`;
+    let created: CdpTarget | undefined;
+    // Newer Chrome requires PUT; older builds only accept GET.
+    for (const method of ["PUT", "GET"] as const) {
+      try {
+        const response = await fetch(endpoint, { method, signal: AbortSignal.timeout(5000) });
+        if (!response.ok) continue;
+        created = (await response.json()) as CdpTarget;
+        if (created.webSocketDebuggerUrl) break;
+      } catch {
+        // try next method
+      }
+    }
+    if (!created?.webSocketDebuggerUrl) {
+      throw new Error(`Unable to open a new tab via ${cdpUrl}/json/new`);
+    }
+    const targetWsUrl = created.webSocketDebuggerUrl;
+    // Carry the session's user-agent override over to the new tab.
+    const host = new URL(cdpUrl).host;
+    let userAgent: string | undefined;
+    for (const [wsUrl, ua] of this.userAgentOverrides) {
+      if (new URL(wsUrl).host === host) {
+        userAgent = ua;
+        break;
+      }
+    }
+    const appliedUa = await initTarget(targetWsUrl, userAgent);
+    if (appliedUa) this.userAgentOverrides.set(targetWsUrl, appliedUa);
+    return {
+      id: created.id,
+      url: created.url ?? "about:blank",
+      title: created.title ?? "",
+      targetWsUrl,
+    };
+  }
+
+  async activateTab(cdpUrl: string, tabId: string): Promise<void> {
+    const response = await fetch(`${cdpUrl}/json/activate/${encodeURIComponent(tabId)}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) throw new Error(`Tab not found: ${tabId}`);
+  }
+
+  async closeTab(cdpUrl: string, tabId: string): Promise<void> {
+    const tab = (await this.listTabs(cdpUrl)).find((candidate) => candidate.id === tabId);
+    if (!tab) throw new Error(`Tab not found: ${tabId}`);
+    this.dropConnection(tab.targetWsUrl);
+    this.userAgentOverrides.delete(tab.targetWsUrl);
+    const response = await fetch(`${cdpUrl}/json/close/${encodeURIComponent(tabId)}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) throw new Error(`Unable to close tab ${tabId}: HTTP ${response.status}`);
   }
 
   async getContent(targetWsUrl: string, options: PageContentOptions): Promise<PageContentResult> {
@@ -2495,6 +2967,10 @@ export class ChromeCdpBrowserController implements BrowserController {
       const limit = options.limit ?? 50;
       const scopeSelector = options.selector;
       const roleFilter = options.roles ? new Set(options.roles) : null;
+      const hrefFilter = options.href ? String(options.href).toLowerCase() : '';
+      const textFilter = options.text
+        ? String(options.text).replace(/\\s+/g, ' ').trim().toLowerCase()
+        : '';
       const candidateSelector = [
         'a[href]',
         'button',
@@ -2766,6 +3242,7 @@ export class ChromeCdpBrowserController implements BrowserController {
       }
 
       const results = [];
+      const crossOriginFrames = [];
       let totalFound = 0;
 
       function maybeRecordElement(root, path, el) {
@@ -2782,6 +3259,25 @@ export class ChromeCdpBrowserController implements BrowserController {
 
         const visible = isVisible(el);
         if (visibleOnly && !visible) return;
+
+        if (hrefFilter) {
+          const href = typeof el.href === 'string' ? el.href : el.getAttribute('href');
+          if (!href || !String(href).toLowerCase().includes(hrefFilter)) return;
+        }
+        if (textFilter) {
+          const haystack = [
+            el.innerText || el.textContent || '',
+            el.getAttribute('aria-label'),
+            el.getAttribute('placeholder'),
+            el.getAttribute('title'),
+            typeof el.value === 'string' ? el.value : '',
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .replace(/\\s+/g, ' ')
+            .toLowerCase();
+          if (!haystack.includes(textFilter)) return;
+        }
 
         totalFound += 1;
         if (results.length >= limit) return;
@@ -2826,12 +3322,21 @@ export class ChromeCdpBrowserController implements BrowserController {
           }
 
           if (current.tagName && current.tagName.toLowerCase() === 'iframe') {
+            let frameDocument = null;
             try {
-              if (current.contentDocument) {
-                walkRoot(current.contentDocument, path.concat(buildSelector(root, current)));
-              }
+              frameDocument = current.contentDocument;
             } catch {
-              // ignore inaccessible frames
+              frameDocument = null;
+            }
+            if (frameDocument) {
+              walkRoot(frameDocument, path.concat(buildSelector(root, current)));
+            } else if (crossOriginFrames.length < 20 && isVisible(current)) {
+              // Cross-origin: not walkable from here, report it so callers can pass it as frame.
+              const info = { selector: composeLocator(path, buildSelector(root, current)) };
+              const title = current.getAttribute('title');
+              if (title) info.title = title.slice(0, 80);
+              if (current.src) info.src = String(current.src).slice(0, 200);
+              crossOriginFrames.push(info);
             }
           }
 
@@ -2842,7 +3347,9 @@ export class ChromeCdpBrowserController implements BrowserController {
       }
 
       walkRoot(document, []);
-      return { elements: results, totalFound, truncated: totalFound > results.length };
+      const output = { elements: results, totalFound, truncated: totalFound > results.length };
+      if (crossOriginFrames.length) output.crossOriginFrames = crossOriginFrames;
+      return output;
 `,
     );
 
@@ -2862,14 +3369,38 @@ export class ChromeCdpBrowserController implements BrowserController {
 
     return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
-      const result = await evaluateOnPage<unknown>(conn, {
-        expression,
-        returnByValue: true,
-        // The expression is an async IIFE — without awaitPromise the pending
-        // Promise serializes to {} and every call reports zero elements.
-        awaitPromise: true,
-      });
-      return extract(result);
+      const evaluate = async (client: CdpClient) =>
+        extract(
+          await evaluateOnPage<unknown>(client, {
+            expression,
+            returnByValue: true,
+            // The expression is an async IIFE — without awaitPromise the pending
+            // Promise serializes to {} and every call reports zero elements.
+            awaitPromise: true,
+          }),
+        );
+      if (!options.frame) return await evaluate(conn);
+
+      const scope = await this.openFrameScope(conn, targetWsUrl, options.frame);
+      try {
+        const inner = await evaluate(scope.client);
+        // Prefix with the frame so returned selectors work from the top page as-is.
+        const withPrefix = (selector: string) => `${options.frame} >>> ${selector}`;
+        return {
+          ...inner,
+          elements: inner.elements.map((element) => ({
+            ...element,
+            selector: withPrefix(element.selector),
+            fallbackSelectors: element.fallbackSelectors?.map(withPrefix),
+          })),
+          crossOriginFrames: inner.crossOriginFrames?.map((frame) => ({
+            ...frame,
+            selector: withPrefix(frame.selector),
+          })),
+        };
+      } finally {
+        scope.release();
+      }
     });
   }
 
@@ -2884,30 +3415,33 @@ export class ChromeCdpBrowserController implements BrowserController {
    * Returns silently on failure — never blocks navigation.
    */
   async dismissCookieBanner(targetWsUrl: string): Promise<DismissCookieBannerResult> {
+    // Why each strategy failed — reported when nothing could be dismissed.
+    const notes = new Set<string>();
     // Try up to 2 rounds — consent banners often load asynchronously.
     for (let attempt = 0; attempt < 2; attempt++) {
       // Strategy 1: Cheap DOM scan first for fast-path common consent banners.
       try {
         const domResult = await this.dismissViaDom(targetWsUrl);
         if (domResult.dismissed) return domResult;
-      } catch {
-        // DOM approach failed — fall through to a11y-based fallback
+      } catch (error) {
+        notes.add(`dom: ${(error as Error).message}`);
       }
 
-      // Strategy 2: Iframe-based consent banners (Sourcepoint, etc.)
+      // Strategy 2: Iframe-based consent banners (Sourcepoint, etc.), incl. cross-origin ones
       try {
         const iframeResult = await this.dismissViaIframe(targetWsUrl);
         if (iframeResult.dismissed) return iframeResult;
-      } catch {
-        // iframe approach failed — fall through
+        if (iframeResult.detail) notes.add(iframeResult.detail);
+      } catch (error) {
+        notes.add(`iframe: ${(error as Error).message}`);
       }
 
       // Strategy 3: Use the accessibility tree when DOM heuristics miss.
       try {
         const a11yResult = await this.dismissViaA11y(targetWsUrl);
         if (a11yResult.dismissed) return a11yResult;
-      } catch {
-        // a11y approach failed — try again after delay on first attempt
+      } catch (error) {
+        notes.add(`a11y: ${(error as Error).message}`);
       }
 
       // Wait 800ms before retrying to let async banners load
@@ -2916,7 +3450,12 @@ export class ChromeCdpBrowserController implements BrowserController {
       }
     }
 
-    return { dismissed: false };
+    return {
+      dismissed: false,
+      detail: notes.size
+        ? [...notes].join("; ")
+        : "no consent banner or accept button found (page, consent iframes, a11y tree)",
+    };
   }
 
   private async dismissViaDom(targetWsUrl: string): Promise<DismissCookieBannerResult> {
@@ -3175,7 +3714,44 @@ export class ChromeCdpBrowserController implements BrowserController {
    * These banners render inside an iframe that needs to be accessed separately.
    */
   private async dismissViaIframe(targetWsUrl: string): Promise<DismissCookieBannerResult> {
+    // Clicks the accept button of the document it runs in; shared by both paths below.
+    const innerSearch = `function (doc) {
+      const innerSelectors = [
+        // Sourcepoint specific
+        'button.sp_choice_type_11',              // Accept all
+        'button.sp_choice_type_ACCEPT_ALL',      // Accept all variant
+        'button.sp_choice_type_SAVE_AND_EXIT',   // Save & exit
+        '.priv-save-btn',                        // Sourcepoint frame
+        '.message-button',                       // Generic Sourcepoint
+        // Title-based
+        'button[title*="Accept"]', 'button[title*="accept"]',
+        'button[title*="Agree"]', 'button[title*="agree"]',
+        'button[title*="Allow"]',
+        'button[title*="Akzeptieren"]', 'button[title*="akzeptieren"]',
+        'button[title*="Zustimmen"]',
+      ];
+      for (const innerSel of innerSelectors) {
+        const btn = doc.querySelector(innerSel);
+        if (btn && btn.offsetWidth > 0) {
+          btn.click();
+          return { method: 'iframe', detail: innerSel };
+        }
+      }
+      // Text-based fallback inside the iframe
+      const buttons = doc.querySelectorAll('button, [role="button"]');
+      for (const btn of buttons) {
+        const text = (btn.textContent || '').trim();
+        if (text.length > 60) continue;
+        if (/accept|agree|allow|akzeptieren|zustimmen|einwilligen|accepter|aceptar/i.test(text)) {
+          btn.click();
+          return { method: 'iframe-text', detail: text };
+        }
+      }
+      return null;
+    }`;
+
     const expression = `(() => {
+      const clickAccept = ${innerSearch};
       // Known consent iframe selectors
       const iframeSelectors = [
         'iframe[id^="sp_message_iframe"]',              // Sourcepoint (dynamic ID suffix)
@@ -3196,64 +3772,69 @@ export class ChromeCdpBrowserController implements BrowserController {
         'iframe[src*="consentmanager"]',
       ];
 
+      // Cross-origin consent frames are handed back so the caller can attach to them.
+      const crossOrigin = [];
       for (const sel of iframeSelectors) {
+        const iframe = document.querySelector(sel);
+        if (!iframe) continue;
+        let doc = null;
         try {
-          const iframe = document.querySelector(sel);
-          if (!iframe) continue;
-          const doc = iframe.contentDocument || iframe.contentWindow?.document;
-          if (!doc) continue;
-
-          // Try known selectors inside the iframe
-          const innerSelectors = [
-            // Sourcepoint specific
-            'button.sp_choice_type_11',              // Accept all
-            'button.sp_choice_type_ACCEPT_ALL',      // Accept all variant
-            'button.sp_choice_type_SAVE_AND_EXIT',   // Save & exit
-            '.priv-save-btn',                        // Sourcepoint frame
-            '.message-button',                       // Generic Sourcepoint
-            // Title-based
-            'button[title*="Accept"]', 'button[title*="accept"]',
-            'button[title*="Agree"]', 'button[title*="agree"]',
-            'button[title*="Allow"]',
-            'button[title*="Akzeptieren"]', 'button[title*="akzeptieren"]',
-            'button[title*="Zustimmen"]',
-          ];
-          for (const innerSel of innerSelectors) {
-            const btn = doc.querySelector(innerSel);
-            if (btn && btn.offsetWidth > 0) {
-              btn.click();
-              return JSON.stringify({ dismissed: true, method: 'iframe', detail: sel + ' > ' + innerSel });
-            }
-          }
-
-          // Text-based fallback inside iframe
-          const buttons = doc.querySelectorAll('button, [role="button"]');
-          for (const btn of buttons) {
-            const text = (btn.textContent || '').trim();
-            if (text.length > 60) continue;
-            if (/accept|agree|allow|akzeptieren|zustimmen|einwilligen|accepter|aceptar/i.test(text)) {
-              btn.click();
-              return JSON.stringify({ dismissed: true, method: 'iframe-text', detail: text });
-            }
-          }
-        } catch { /* cross-origin iframe — skip */ }
+          doc = iframe.contentDocument || iframe.contentWindow?.document || null;
+        } catch {
+          doc = null;
+        }
+        if (!doc) {
+          const locator = iframe.id ? '#' + CSS.escape(iframe.id) : sel;
+          if (!crossOrigin.includes(locator)) crossOrigin.push(locator);
+          continue;
+        }
+        const hit = clickAccept(doc);
+        if (hit) return { dismissed: true, method: hit.method, detail: sel + ' > ' + hit.detail };
       }
-
-      return JSON.stringify({ dismissed: false });
+      return { dismissed: false, crossOrigin };
     })()`;
 
     return await this.withRetry(targetWsUrl, async (conn) => {
       await this.ensureEnabled(targetWsUrl);
-      const result = await evaluateOnPage<string>(conn, {
-        expression,
-        returnByValue: true,
-      });
-      const raw = result.result.value ?? '{"dismissed":false}';
-      try {
-        return JSON.parse(raw) as DismissCookieBannerResult;
-      } catch {
-        return { dismissed: false };
+      const result = await evaluateOnPage<{
+        dismissed: boolean;
+        method?: "iframe" | "iframe-text";
+        detail?: string;
+        crossOrigin?: string[];
+      }>(conn, { expression, returnByValue: true });
+      const value = result.result.value;
+      if (!value) return { dismissed: false };
+      if (value.dismissed) return { dismissed: true, method: value.method, detail: value.detail };
+
+      const notes: string[] = [];
+      for (const frame of value.crossOrigin ?? []) {
+        let scope: FrameScope;
+        try {
+          scope = await this.openFrameScope(conn, targetWsUrl, frame);
+        } catch (error) {
+          notes.push(`consent iframe ${frame}: ${(error as Error).message}`);
+          continue;
+        }
+        try {
+          const inner = await evaluateOnPage<{
+            method: "iframe" | "iframe-text";
+            detail: string;
+          } | null>(scope.client, {
+            expression: `(${innerSearch})(document)`,
+            returnByValue: true,
+          });
+          const hit = inner.result.value;
+          if (hit) {
+            return { dismissed: true, method: hit.method, detail: `${frame} >>> ${hit.detail}` };
+          }
+          notes.push(`consent iframe ${frame}: no accept button found`);
+        } catch (error) {
+          notes.push(`consent iframe ${frame}: ${(error as Error).message}`);
+        } finally {
+          scope.release();
+        }
       }
+      return notes.length ? { dismissed: false, detail: notes.join("; ") } : { dismissed: false };
     });
   }
 
@@ -3534,6 +4115,57 @@ export class MockBrowserController implements BrowserController {
   async getCurrentUrl(cdpUrl: string): Promise<string> {
     const page = this.pages.get(cdpUrl);
     return page?.url ?? "about:blank";
+  }
+
+  private readonly tabs = new Map<string, string[]>();
+  private tabCounter = 0;
+
+  /** Tab ids are the page keys (targetWsUrl); the initial page is the cdpUrl itself. */
+  private tabIds(cdpUrl: string): string[] {
+    let ids = this.tabs.get(cdpUrl);
+    if (!ids) {
+      ids = this.pages.has(cdpUrl) ? [cdpUrl] : [];
+      this.tabs.set(cdpUrl, ids);
+    }
+    return ids;
+  }
+
+  async getPageState(targetWsUrl: string): Promise<PageState> {
+    const page = this.pages.get(targetWsUrl);
+    if (!page) throw new Error("mock page missing");
+    return { url: page.url, title: page.title, readyState: "complete" };
+  }
+
+  async listTabs(cdpUrl: string): Promise<TabInfo[]> {
+    return this.tabIds(cdpUrl).map((id) => {
+      const page = this.pages.get(id);
+      return { id, url: page?.url ?? "about:blank", title: page?.title ?? "", targetWsUrl: id };
+    });
+  }
+
+  async openTab(cdpUrl: string): Promise<TabInfo> {
+    this.tabCounter += 1;
+    const id = `${cdpUrl}/tab-${this.tabCounter}`;
+    this.pages.set(id, {
+      url: "about:blank",
+      title: "about:blank",
+      text: "",
+      html: "<html><body></body></html>",
+    });
+    this.tabIds(cdpUrl).push(id);
+    return { id, url: "about:blank", title: "about:blank", targetWsUrl: id };
+  }
+
+  async activateTab(cdpUrl: string, tabId: string): Promise<void> {
+    if (!this.tabIds(cdpUrl).includes(tabId)) throw new Error(`Tab not found: ${tabId}`);
+  }
+
+  async closeTab(cdpUrl: string, tabId: string): Promise<void> {
+    const ids = this.tabIds(cdpUrl);
+    const index = ids.indexOf(tabId);
+    if (index === -1) throw new Error(`Tab not found: ${tabId}`);
+    ids.splice(index, 1);
+    this.pages.delete(tabId);
   }
 
   async getContent(cdpUrl: string, options: PageContentOptions): Promise<PageContentResult> {

@@ -113,10 +113,21 @@ agentic-browser agent start --user-agent "MyBot/1.0"
 agentic-browser agent status
 agentic-browser agent navigate https://example.com
 agentic-browser agent click "#login"
+agentic-browser agent click --text "Accept all" --frame "#sp_message_iframe_123"
+agentic-browser agent type --frame "iframe#checkout" "#card" "4242..."
+agentic-browser agent wait --url "*/dashboard*" --load --timeout 10000
+agentic-browser agent wait --text "Welcome back"
+agentic-browser agent eval "document.querySelectorAll('article').length"
+agentic-browser agent tabs
+agentic-browser agent tab-new https://example.org
+agentic-browser agent tab <id-or-prefix>
+agentic-browser agent tab-close <id-or-prefix>
 agentic-browser agent content --mode summary
 agentic-browser agent content --mode html --selector main
 agentic-browser agent elements
 agentic-browser agent elements --roles button,link --limit 20
+agentic-browser agent elements --href /news/ --text "gta"
+agentic-browser agent screenshot --out ./page.png --full-page
 agentic-browser agent memory-search "navigate:example.com" --domain example.com
 agentic-browser agent stop
 agentic-browser agent cleanup --dry-run --max-age-days 7
@@ -155,6 +166,10 @@ Returns a JSON array of elements with selectors and fallback selectors usable in
 MCP responses are compact — `visible`, `actions`, and `tagName` are omitted to reduce token usage, and `enabled` is omitted when it is `true`. Responses also include a `summary` block with `countsByRole` and `primaryActions` so an LLM can identify the main controls faster. The full element shape is available via the programmatic API.
 
 When an element lives inside an open shadow root or a same-origin iframe, discovery returns a composed locator using `>>>` to cross boundaries, for example `iframe[name="checkout"] >>> button[aria-label="Pay"]`. The same locator string works with `agent click`, `agent type`, MCP `browser_interact`, and fallback selectors.
+
+Cross-origin iframes (consent managers, payment forms) cannot be read from the page. `agent elements` lists them under `crossOriginFrames`; pass one of those selectors as `--frame` to `elements`, `click`, `type`, `hover`, `select`, `toggle`, `wait` and `eval` to run inside it, or compose it directly: `#sp_message_iframe_123 >>> text=Accept all`. A `text=Foo` segment matches by visible text, label or placeholder (`text="Foo"` for an exact match).
+
+`agent status`, `navigate` and interaction commands report the current `url`. `agent cookies` also handles cross-origin consent iframes and, when nothing was dismissed, explains why in `detail`.
 
 `agent content` and MCP `browser_get_content` now default to `summary`, which returns a low-token overview with `title`, `headings`, `landmarks`, `primaryActions`, `inputs`, `alerts`, and iframe metadata. Use `a11y` when you need the deeper accessibility structure, and `text` or `html` only when you need raw content.
 

@@ -26,6 +26,7 @@ export const InteractPayloadSchema = z.object({
   scrollX: z.number().optional(),
   scrollY: z.number().optional(),
   timeoutMs: z.number().optional(),
+  frame: z.string().optional(),
 });
 
 export type InteractAction = z.infer<typeof InteractActionSchema>;

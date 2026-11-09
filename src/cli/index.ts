@@ -6,14 +6,21 @@ import {
   agentContent,
   agentDismissCookies,
   agentElements,
+  agentEval,
   agentInteract,
   agentMemorySearch,
   agentNavigate,
   agentRestart,
+  agentScreenshot,
   agentStart,
   agentStatus,
   agentStop,
+  agentTabClose,
+  agentTabNew,
+  agentTabs,
+  agentTabSwitch,
   agentTerminate,
+  agentWait,
 } from "./commands/agent.js";
 import { runSessionStart } from "./commands/session-start.js";
 import { runSessionStatus } from "./commands/session-status.js";
@@ -29,6 +36,20 @@ import { runMemoryVerify } from "./commands/memory-verify.js";
 import { runMemoryStats } from "./commands/memory-stats.js";
 
 const collect = (value: string, previous: string[] = []) => [...previous, value];
+
+const FRAME_HELP = "iframe selector to run in (cross-origin frames supported)";
+
+/** Resolves `<selector>` or `--text` (substring; `--exact` for exact match) to one locator. */
+function resolveTarget(selector: string | undefined, options: { text?: string; exact?: boolean }) {
+  if (selector && options.text) throw new Error("Pass either a selector or --text, not both");
+  if (options.text) {
+    return options.exact ? `text=${JSON.stringify(options.text)}` : `text=${options.text}`;
+  }
+  if (!selector) throw new Error("Missing target: pass a selector or --text <text>");
+  return selector;
+}
+
+type TargetOptions = { fallback: string[]; text?: string; exact?: boolean; frame?: string };
 
 async function main() {
   const runtime = createCliRuntime();
@@ -257,12 +278,16 @@ async function main() {
 
   agent
     .command("click")
-    .argument("<selector>")
+    .argument("[selector]", "CSS selector or composed locator (a >>> b)")
+    .option("--text <text>", "click the element with this visible text instead of a selector")
+    .option("--exact", "with --text: require an exact text match")
+    .option("--frame <selector>", FRAME_HELP)
     .option("--fallback <selector>", "backup CSS selector", collect, [])
-    .action(async (selector: string, options: { fallback: string[] }) => {
+    .action(async (selector: string | undefined, options: TargetOptions) => {
       const result = await agentInteract(runtime, {
         action: "click",
-        selector,
+        selector: resolveTarget(selector, options),
+        frame: options.frame,
         fallbackSelectors: options.fallback,
       });
       console.log(JSON.stringify(result));
@@ -270,18 +295,30 @@ async function main() {
 
   agent
     .command("type")
-    .argument("<selector>")
-    .argument("<text>")
+    .argument("<selectorOrText>", "CSS selector, or the text to type when --into-text is used")
+    .argument("[text]")
+    .option("--into-text <label>", "target the field by its visible text/label/placeholder")
+    .option("--frame <selector>", FRAME_HELP)
     .option("--fallback <selector>", "backup CSS selector", collect, [])
-    .action(async (selector: string, text: string, options: { fallback: string[] }) => {
-      const result = await agentInteract(runtime, {
-        action: "type",
-        selector,
-        text,
-        fallbackSelectors: options.fallback,
-      });
-      console.log(JSON.stringify(result));
-    });
+    .action(
+      async (
+        first: string,
+        second: string | undefined,
+        options: { intoText?: string; frame?: string; fallback: string[] },
+      ) => {
+        const selector = options.intoText ? `text=${options.intoText}` : first;
+        const text = options.intoText ? first : second;
+        if (text === undefined) throw new Error("Missing text to type");
+        const result = await agentInteract(runtime, {
+          action: "type",
+          selector,
+          text,
+          frame: options.frame,
+          fallbackSelectors: options.fallback,
+        });
+        console.log(JSON.stringify(result));
+      },
+    );
 
   agent
     .command("press")
@@ -296,25 +333,42 @@ async function main() {
 
   agent
     .command("wait")
-    .argument("<selector>")
-    .option("--timeout <ms>", "timeout in milliseconds", "2000")
-    .action(async (selector: string, options: { timeout: string }) => {
-      const result = await agentInteract(runtime, {
-        action: "waitFor",
-        selector,
-        timeoutMs: Number.parseInt(options.timeout, 10),
-      });
-      console.log(JSON.stringify(result));
-    });
+    .description("Wait for an element, visible text, a URL and/or the page load")
+    .argument("[selector]")
+    .option("--text <text>", "wait until an element with this text exists")
+    .option("--url <pattern>", "wait until the URL matches (substring, * glob, or /regex/)")
+    .option("--load", "wait until document.readyState is complete")
+    .option("--frame <selector>", FRAME_HELP)
+    .option("--timeout <ms>", "timeout in milliseconds", "10000")
+    .action(
+      async (
+        selector: string | undefined,
+        options: { text?: string; url?: string; load?: boolean; frame?: string; timeout: string },
+      ) => {
+        const result = await agentWait(runtime, {
+          selector,
+          text: options.text,
+          url: options.url,
+          load: options.load,
+          frame: options.frame,
+          timeoutMs: Number.parseInt(options.timeout, 10),
+        });
+        console.log(JSON.stringify(result));
+      },
+    );
 
   agent
     .command("hover")
-    .argument("<selector>")
+    .argument("[selector]")
+    .option("--text <text>", "hover the element with this visible text")
+    .option("--exact", "with --text: require an exact text match")
+    .option("--frame <selector>", FRAME_HELP)
     .option("--fallback <selector>", "backup CSS selector", collect, [])
-    .action(async (selector: string, options: { fallback: string[] }) => {
+    .action(async (selector: string | undefined, options: TargetOptions) => {
       const result = await agentInteract(runtime, {
         action: "hover",
-        selector,
+        selector: resolveTarget(selector, options),
+        frame: options.frame,
         fallbackSelectors: options.fallback,
       });
       console.log(JSON.stringify(result));
@@ -324,25 +378,31 @@ async function main() {
     .command("select")
     .argument("<selector>")
     .argument("<value>")
+    .option("--frame <selector>", FRAME_HELP)
     .option("--fallback <selector>", "backup CSS selector", collect, [])
-    .action(async (selector: string, value: string, options: { fallback: string[] }) => {
-      const result = await agentInteract(runtime, {
-        action: "select",
-        selector,
-        value,
-        fallbackSelectors: options.fallback,
-      });
-      console.log(JSON.stringify(result));
-    });
+    .action(
+      async (selector: string, value: string, options: { frame?: string; fallback: string[] }) => {
+        const result = await agentInteract(runtime, {
+          action: "select",
+          selector,
+          value,
+          frame: options.frame,
+          fallbackSelectors: options.fallback,
+        });
+        console.log(JSON.stringify(result));
+      },
+    );
 
   agent
     .command("toggle")
     .argument("<selector>")
+    .option("--frame <selector>", FRAME_HELP)
     .option("--fallback <selector>", "backup CSS selector", collect, [])
-    .action(async (selector: string, options: { fallback: string[] }) => {
+    .action(async (selector: string, options: { frame?: string; fallback: string[] }) => {
       const result = await agentInteract(runtime, {
         action: "toggle",
         selector,
+        frame: options.frame,
         fallbackSelectors: options.fallback,
       });
       console.log(JSON.stringify(result));
@@ -398,6 +458,51 @@ async function main() {
     console.log(JSON.stringify(result));
   });
 
+  agent
+    .command("eval")
+    .description("Evaluate a JavaScript expression in the page and print its JSON value")
+    .argument("<expression>", "expression; promises are awaited")
+    .option("--frame <selector>", FRAME_HELP)
+    .action(async (expression: string, options: { frame?: string }) => {
+      const result = await agentEval(runtime, { expression, frame: options.frame });
+      console.log(JSON.stringify(result));
+    });
+
+  agent
+    .command("tabs")
+    .description("List open tabs")
+    .action(async () => {
+      const result = await agentTabs(runtime);
+      console.log(JSON.stringify(result));
+    });
+
+  agent
+    .command("tab")
+    .description("Switch the session to another tab")
+    .argument("<id>", "tab id (or unique prefix) from agent tabs")
+    .action(async (id: string) => {
+      const result = await agentTabSwitch(runtime, { id });
+      console.log(JSON.stringify(result));
+    });
+
+  agent
+    .command("tab-new")
+    .description("Open a new tab, switch to it and optionally navigate")
+    .argument("[url]")
+    .action(async (url: string | undefined) => {
+      const result = await agentTabNew(runtime, { url });
+      console.log(JSON.stringify(result));
+    });
+
+  agent
+    .command("tab-close")
+    .description("Close a tab (switches to another tab if it was active)")
+    .argument("<id>", "tab id (or unique prefix) from agent tabs")
+    .action(async (id: string) => {
+      const result = await agentTabClose(runtime, { id });
+      console.log(JSON.stringify(result));
+    });
+
   agent.command("restart").action(async () => {
     const result = await agentRestart(runtime);
     console.log(JSON.stringify(result));
@@ -429,6 +534,28 @@ async function main() {
     );
 
   agent
+    .command("screenshot")
+    .description("Save a screenshot of the current page to a file")
+    .option("--out <path>", "output file (default: <data dir>/screenshots/<session>-<ts>.<ext>)")
+    .option("--format <format>", "png|jpeg", "png")
+    .option("--quality <n>", "jpeg quality 0-100")
+    .option("--full-page", "capture the full scrollable page")
+    .action(
+      async (options: { out?: string; format: string; quality?: string; fullPage?: boolean }) => {
+        if (options.format !== "png" && options.format !== "jpeg") {
+          throw new Error(`Invalid --format: ${options.format} (expected png or jpeg)`);
+        }
+        const result = await agentScreenshot(runtime, {
+          out: options.out,
+          format: options.format,
+          quality: options.quality ? Number.parseInt(options.quality, 10) : undefined,
+          fullPage: Boolean(options.fullPage),
+        });
+        console.log(JSON.stringify(result));
+      },
+    );
+
+  agent
     .command("elements")
     .description("List interactive elements on the current page")
     .option("--roles <roles>", "comma-separated roles filter", (v) => v.split(","))
@@ -436,18 +563,27 @@ async function main() {
     .option("--no-visible-only", "include hidden elements")
     .option("--limit <n>", "max elements", "50")
     .option("--selector <selector>", "scope to CSS selector subtree")
+    .option("--href <substring>", "only links whose href contains this")
+    .option("--text <substring>", "only elements whose text/label contains this (case-insensitive)")
+    .option("--frame <selector>", FRAME_HELP)
     .action(
       async (options: {
         roles?: string[];
         visibleOnly: boolean;
         limit: string;
         selector?: string;
+        href?: string;
+        text?: string;
+        frame?: string;
       }) => {
         const result = await agentElements(runtime, {
           roles: options.roles,
           visibleOnly: options.visibleOnly,
           limit: Number.parseInt(options.limit, 10),
           selector: options.selector,
+          href: options.href,
+          text: options.text,
+          frame: options.frame,
         });
         console.log(JSON.stringify(result));
       },

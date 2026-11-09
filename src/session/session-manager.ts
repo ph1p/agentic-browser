@@ -18,6 +18,8 @@ import {
   type InteractPayload,
   type InteractiveElementsOptions,
   type PageContentOptions,
+  type PageState,
+  type TabInfo,
 } from "./browser-controller.js";
 import { SessionStore, type StoredSessionRecord } from "./session-store.js";
 import { assertNavigableUrl } from "./url-policy.js";
@@ -297,6 +299,62 @@ export class SessionManager {
   async getCurrentUrl(sessionId: string): Promise<string> {
     const record = await this.ensureSession(sessionId);
     return await this.browser.getCurrentUrl(record.targetWsUrl);
+  }
+
+  async getPageState(sessionId: string): Promise<PageState> {
+    const record = await this.ensureSession(sessionId);
+    return await this.browser.getPageState(record.targetWsUrl);
+  }
+
+  async listTabs(sessionId: string): Promise<Array<TabInfo & { active: boolean }>> {
+    const record = await this.ensureSession(sessionId);
+    const tabs = await this.browser.listTabs(record.cdpUrl);
+    return tabs.map((tab) => ({ ...tab, active: tab.targetWsUrl === record.targetWsUrl }));
+  }
+
+  /** Points the session at another tab; later commands run there. */
+  async switchTab(sessionId: string, tabId: string): Promise<TabInfo> {
+    const record = await this.ensureSession(sessionId);
+    const tab = (await this.browser.listTabs(record.cdpUrl)).find((t) => t.id === tabId);
+    if (!tab) throw new Error(`Tab not found: ${tabId}`);
+    await this.browser.activateTab(record.cdpUrl, tab.id);
+    this.store.save({
+      ...record,
+      targetWsUrl: tab.targetWsUrl,
+      lastUrl: tab.url || record.lastUrl,
+    });
+    this.recordEvent(sessionId, "lifecycle", "info", `Switched to tab ${tab.id}`);
+    return tab;
+  }
+
+  async newTab(sessionId: string): Promise<TabInfo> {
+    const record = await this.ensureSession(sessionId);
+    const tab = await this.browser.openTab(record.cdpUrl);
+    await this.browser.activateTab(record.cdpUrl, tab.id);
+    this.store.save({ ...record, targetWsUrl: tab.targetWsUrl, lastUrl: tab.url });
+    this.recordEvent(sessionId, "lifecycle", "info", `Opened tab ${tab.id}`);
+    return tab;
+  }
+
+  /** Closes a tab; closing the active one moves the session to a remaining tab. */
+  async closeTab(sessionId: string, tabId: string): Promise<{ closed: string; active: TabInfo }> {
+    const record = await this.ensureSession(sessionId);
+    const tabs = await this.browser.listTabs(record.cdpUrl);
+    const target = tabs.find((t) => t.id === tabId);
+    if (!target) throw new Error(`Tab not found: ${tabId}`);
+    const remaining = tabs.filter((t) => t.id !== tabId);
+    if (remaining.length === 0) {
+      throw new Error("Refusing to close the last tab; use agent stop to end the session");
+    }
+    await this.browser.closeTab(record.cdpUrl, tabId);
+    let active = tabs.find((t) => t.targetWsUrl === record.targetWsUrl) ?? remaining[0]!;
+    if (target.targetWsUrl === record.targetWsUrl) {
+      active = remaining[remaining.length - 1]!;
+      await this.browser.activateTab(record.cdpUrl, active.id);
+      this.store.save({ ...record, targetWsUrl: active.targetWsUrl, lastUrl: active.url });
+    }
+    this.recordEvent(sessionId, "lifecycle", "info", `Closed tab ${tabId}`);
+    return { closed: tabId, active };
   }
 
   async dismissCookieBanner(sessionId: string): Promise<DismissCookieBannerResult> {

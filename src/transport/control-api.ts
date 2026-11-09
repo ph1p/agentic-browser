@@ -65,6 +65,26 @@ export class ControlApi {
     return await this.sessions.getCurrentUrl(sessionId);
   }
 
+  async getPageState(sessionId: string) {
+    return await this.sessions.getPageState(sessionId);
+  }
+
+  async listTabs(sessionId: string) {
+    return await this.sessions.listTabs(sessionId);
+  }
+
+  async switchTab(sessionId: string, tabId: string) {
+    return await this.sessions.switchTab(sessionId, tabId);
+  }
+
+  async newTab(sessionId: string) {
+    return await this.sessions.newTab(sessionId);
+  }
+
+  async closeTab(sessionId: string, tabId: string) {
+    return await this.sessions.closeTab(sessionId, tabId);
+  }
+
   listEvents(sessionId: string, limit = 100) {
     return { events: this.sessions.listEvents(sessionId, limit) };
   }
