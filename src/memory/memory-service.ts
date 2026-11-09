@@ -72,6 +72,12 @@ export class MemoryService {
     this.profileStore.flushSync();
   }
 
+  /** Flush pending writes and release the stores' process exit hooks. */
+  dispose(): void {
+    this.store.dispose();
+    this.profileStore.dispose();
+  }
+
   search(input: MemorySearchInput): MemorySearchResult[] {
     const cacheKey = `${input.taskIntent}\0${input.siteDomain ?? ""}\0${input.limit ?? 10}`;
     const now = Date.now();
