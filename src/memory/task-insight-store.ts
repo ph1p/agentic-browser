@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { registerFlushable } from "../lib/flush-registry.js";
 import { ensurePrivateDir, writePrivateFileSync } from "../lib/secure-fs.js";
 import {
   MemoryStateSchema,
@@ -12,13 +13,6 @@ import { redactStepPayload } from "./redact-step-payload.js";
 
 const EMPTY_STATE: MemoryState = { insights: [] };
 const FLUSH_DELAY_MS = 500;
-const REGISTERED_EXIT_HANDLERS = Symbol.for("agentic-browser.task-insight-store.exit-handlers");
-const REGISTERED_STORES = Symbol.for("agentic-browser.task-insight-store.instances");
-
-interface ProcessWithTaskInsightRegistry extends NodeJS.Process {
-  [REGISTERED_EXIT_HANDLERS]?: boolean;
-  [REGISTERED_STORES]?: Set<TaskInsightStore>;
-}
 
 export class TaskInsightStore {
   private readonly filePath: string;
@@ -27,6 +21,7 @@ export class TaskInsightStore {
   private cached: TaskInsight[] | null = null;
   private dirty = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly unregister: () => void;
 
   constructor(baseDir: string) {
     const memoryDir = path.join(baseDir, "memory");
@@ -45,7 +40,7 @@ export class TaskInsightStore {
       this.writeDisk(EMPTY_STATE);
     }
 
-    this.registerProcessHandlers();
+    this.unregister = registerFlushable(this);
   }
 
   list(): TaskInsight[] {
@@ -88,6 +83,12 @@ export class TaskInsightStore {
     }
     this.cached = insights;
     this.markDirty();
+  }
+
+  /** Flush pending writes and stop flushing on process exit. Idempotent. */
+  dispose(): void {
+    this.flushSync();
+    this.unregister();
   }
 
   /** Force an immediate synchronous flush (used at shutdown). */
@@ -187,33 +188,5 @@ export class TaskInsightStore {
     const tempPath = `${this.filePath}.tmp`;
     writePrivateFileSync(tempPath, JSON.stringify(state, null, 2));
     fs.renameSync(tempPath, this.filePath);
-  }
-
-  private registerProcessHandlers(): void {
-    const proc = process as ProcessWithTaskInsightRegistry;
-    const stores = (proc[REGISTERED_STORES] ??= new Set<TaskInsightStore>());
-    stores.add(this);
-
-    if (proc[REGISTERED_EXIT_HANDLERS]) {
-      return;
-    }
-
-    proc[REGISTERED_EXIT_HANDLERS] = true;
-
-    const flushAll = () => {
-      for (const store of stores) {
-        store.flushSync();
-      }
-    };
-
-    process.on("exit", flushAll);
-    process.on("SIGINT", () => {
-      flushAll();
-      process.exit(0);
-    });
-    process.on("SIGTERM", () => {
-      flushAll();
-      process.exit(0);
-    });
   }
 }

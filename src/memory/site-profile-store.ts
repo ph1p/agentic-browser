@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { registerFlushable } from "../lib/flush-registry.js";
 import { ensurePrivateDir, writePrivateFileSync } from "../lib/secure-fs.js";
 import {
   SiteProfileSchema,
@@ -11,19 +12,13 @@ import {
 
 const EMPTY_STATE: SiteProfileState = { profiles: [] };
 const FLUSH_DELAY_MS = 500;
-const REGISTERED_EXIT_HANDLERS = Symbol.for("agentic-browser.site-profile-store.exit-handlers");
-const REGISTERED_STORES = Symbol.for("agentic-browser.site-profile-store.instances");
-
-interface ProcessWithSiteProfileRegistry extends NodeJS.Process {
-  [REGISTERED_EXIT_HANDLERS]?: boolean;
-  [REGISTERED_STORES]?: Set<SiteProfileStore>;
-}
 
 export class SiteProfileStore {
   private readonly filePath: string;
   private cached: SiteProfile[] | null = null;
   private dirty = false;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly unregister: () => void;
 
   constructor(baseDir: string) {
     const memoryDir = path.join(baseDir, "memory");
@@ -41,7 +36,7 @@ export class SiteProfileStore {
       this.writeDisk(EMPTY_STATE);
     }
 
-    this.registerProcessHandlers();
+    this.unregister = registerFlushable(this);
   }
 
   list(): SiteProfile[] {
@@ -67,6 +62,12 @@ export class SiteProfileStore {
       profiles.push(normalized);
     }
     this.markDirty();
+  }
+
+  /** Flush pending writes and stop flushing on process exit. Idempotent. */
+  dispose(): void {
+    this.flushSync();
+    this.unregister();
   }
 
   flushSync(): void {
@@ -144,33 +145,5 @@ export class SiteProfileStore {
     const tempPath = `${this.filePath}.tmp`;
     writePrivateFileSync(tempPath, JSON.stringify(state, null, 2));
     fs.renameSync(tempPath, this.filePath);
-  }
-
-  private registerProcessHandlers(): void {
-    const proc = process as ProcessWithSiteProfileRegistry;
-    const stores = (proc[REGISTERED_STORES] ??= new Set<SiteProfileStore>());
-    stores.add(this);
-
-    if (proc[REGISTERED_EXIT_HANDLERS]) {
-      return;
-    }
-
-    proc[REGISTERED_EXIT_HANDLERS] = true;
-
-    const flushAll = () => {
-      for (const store of stores) {
-        store.flushSync();
-      }
-    };
-
-    process.on("exit", flushAll);
-    process.on("SIGINT", () => {
-      flushAll();
-      process.exit(0);
-    });
-    process.on("SIGTERM", () => {
-      flushAll();
-      process.exit(0);
-    });
   }
 }

@@ -38,7 +38,8 @@ export class AgenticBrowserCore {
   }
 
   /**
-   * Release process-level resources (event store exit handlers, controller timers).
+   * Release process-level resources (event store and memory store exit handlers,
+   * controller timers). Flushes pending memory writes.
    * Does not terminate browser sessions. Idempotent.
    */
   async dispose(): Promise<void> {
@@ -46,6 +47,7 @@ export class AgenticBrowserCore {
     this.disposed = true;
     this.browserController.dispose?.();
     this.context.eventStore.dispose();
+    this.context.memoryService.dispose();
   }
 
   async startSession(input: { browser: "chrome" } = { browser: "chrome" }) {
