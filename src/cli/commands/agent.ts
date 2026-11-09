@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { CommandType } from "../../lib/domain-schemas.js";
-import type { InteractPayload } from "../../session/browser-controller.js";
+import { isConnectionError, type InteractPayload } from "../../session/browser-controller.js";
 import type { Runtime } from "../runtime.js";
 
 const STATE_FILE_NAME = "agent-state.json";
@@ -74,6 +74,13 @@ export async function agentStop(runtime: Runtime) {
   return { ok: true, action: "stop", sessionId };
 }
 
+/** Only connection-level failures justify a restart + re-run. */
+function isRetryableFailure(message: string): boolean {
+  if (isConnectionError(message)) return true;
+  const lower = message.toLowerCase();
+  return lower.includes("session") && (lower.includes("dead") || lower.includes("terminated"));
+}
+
 async function executeAgentCommand(
   runtime: Runtime,
   input: { type: CommandType; payload: Record<string, unknown> },
@@ -88,20 +95,28 @@ async function executeAgentCommand(
       payload: input.payload,
     });
 
-  try {
-    const first = await attempt();
-    if (first.resultStatus === "failed") {
-      throw new Error(first.resultMessage ?? "Command failed");
-    }
-    return first;
-  } catch {
+  const retryAfterRestart = async () => {
     await runtime.api.restartSession(sessionId);
     const second = await attempt();
     if (second.resultStatus === "failed") {
       throw new Error(second.resultMessage ?? "Command failed after retry");
     }
     return second;
+  };
+
+  const noRetry = input.type === "restart" || input.type === "terminate";
+
+  let first: Awaited<ReturnType<typeof attempt>>;
+  try {
+    first = await attempt();
+  } catch (error) {
+    if (noRetry || !isRetryableFailure((error as Error).message)) throw error;
+    return await retryAfterRestart();
   }
+  if (first.resultStatus !== "failed") return first;
+  const message = first.resultMessage ?? "Command failed";
+  if (noRetry || !isRetryableFailure(message)) throw new Error(message);
+  return await retryAfterRestart();
 }
 
 export async function agentNavigate(runtime: Runtime, input: { url: string }) {

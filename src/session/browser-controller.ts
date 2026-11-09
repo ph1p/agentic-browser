@@ -1090,7 +1090,7 @@ const CONNECTION_CLEANUP_INTERVAL_MS = 60_000; // 1 minute
  * Deliberately excludes CDP timeouts: a timed-out request may have reached
  * Chrome, so replaying it for a non-idempotent op could fire the action twice.
  */
-function isConnectionError(error: unknown): boolean {
+export function isConnectionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes("CDP connection closed") || message.includes("WebSocket not open");
 }
