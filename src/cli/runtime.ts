@@ -27,11 +27,25 @@ export class AgenticBrowserCore {
   readonly context: AppContext;
   readonly sessions: SessionManager;
   readonly api: ControlApi;
+  private readonly browserController: BrowserController;
+  private disposed = false;
 
   constructor(context: AppContext, browserController: BrowserController) {
     this.context = context;
+    this.browserController = browserController;
     this.sessions = new SessionManager(context, browserController);
     this.api = new ControlApi(this.sessions);
+  }
+
+  /**
+   * Release process-level resources (event store exit handlers, controller timers).
+   * Does not terminate browser sessions. Idempotent.
+   */
+  async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.browserController.dispose?.();
+    this.context.eventStore.dispose();
   }
 
   async startSession(input: { browser: "chrome" } = { browser: "chrome" }) {
@@ -140,12 +154,4 @@ export function createMockAgenticBrowserCore(env: NodeJS.ProcessEnv): AgenticBro
 
 export function createCliRuntime(): Runtime {
   return createAgenticBrowserCore();
-}
-
-export function createDefaultRuntime(): Runtime {
-  const tempDir = `/tmp/agentic-browser-test-${Math.random().toString(16).slice(2)}`;
-  return createMockAgenticBrowserCore({
-    ...process.env,
-    AGENTIC_BROWSER_DIR: tempDir,
-  });
 }
