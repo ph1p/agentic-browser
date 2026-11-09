@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { ensurePrivateDir, writePrivateFileSync } from "../lib/secure-fs.js";
 import {
   SiteProfileSchema,
   SiteProfileStateSchema,
@@ -26,7 +27,7 @@ export class SiteProfileStore {
 
   constructor(baseDir: string) {
     const memoryDir = path.join(baseDir, "memory");
-    fs.mkdirSync(memoryDir, { recursive: true });
+    ensurePrivateDir(memoryDir);
     this.filePath = path.join(memoryDir, "site-profiles.json");
 
     const tmpPath = `${this.filePath}.tmp`;
@@ -141,7 +142,7 @@ export class SiteProfileStore {
 
   private writeDisk(state: SiteProfileState): void {
     const tempPath = `${this.filePath}.tmp`;
-    fs.writeFileSync(tempPath, JSON.stringify(state, null, 2), "utf8");
+    writePrivateFileSync(tempPath, JSON.stringify(state, null, 2));
     fs.renameSync(tempPath, this.filePath);
   }
 

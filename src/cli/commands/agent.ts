@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { CommandType } from "../../lib/domain-schemas.js";
+import { ensurePrivateDir, writePrivateFileSync } from "../../lib/secure-fs.js";
 import type { InteractPayload } from "../../session/browser-controller.js";
 import type { Runtime } from "../runtime.js";
 
@@ -30,8 +31,8 @@ function loadState(runtime: Runtime): AgentState {
 
 function saveState(runtime: Runtime, state: AgentState): void {
   const dir = path.dirname(stateFilePath(runtime));
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(stateFilePath(runtime), JSON.stringify(state, null, 2));
+  ensurePrivateDir(dir);
+  writePrivateFileSync(stateFilePath(runtime), JSON.stringify(state, null, 2));
 }
 
 function requireSessionId(runtime: Runtime): string {

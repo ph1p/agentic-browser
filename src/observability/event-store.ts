@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type { SessionEvent } from "../lib/domain-schemas.js";
+import { ensurePrivateDir, PRIVATE_FILE_MODE } from "../lib/secure-fs.js";
 
 const MAX_EVENTS_PER_SESSION = 500;
 
@@ -14,8 +15,15 @@ export class EventStore {
   private flushInFlight: Promise<void> | undefined;
 
   constructor(baseDir: string) {
-    fs.mkdirSync(baseDir, { recursive: true });
+    ensurePrivateDir(baseDir);
     this.filePath = path.join(baseDir, "session-events.log");
+    try {
+      if (fs.existsSync(this.filePath)) {
+        fs.chmodSync(this.filePath, PRIVATE_FILE_MODE);
+      }
+    } catch {
+      // never crash on chmod failure
+    }
     process.on("beforeExit", this.flushSync);
     process.on("exit", this.flushSync);
   }
@@ -86,7 +94,7 @@ export class EventStore {
 
     const chunk = this.bufferedLines.splice(0, this.bufferedLines.length).join("");
     this.flushInFlight = fs.promises
-      .appendFile(this.filePath, chunk, "utf8")
+      .appendFile(this.filePath, chunk, { encoding: "utf8", mode: PRIVATE_FILE_MODE })
       .catch(() => {})
       .finally(() => {
         this.flushInFlight = undefined;
@@ -109,7 +117,7 @@ export class EventStore {
 
     const chunk = this.bufferedLines.splice(0, this.bufferedLines.length).join("");
     try {
-      fs.appendFileSync(this.filePath, chunk, "utf8");
+      fs.appendFileSync(this.filePath, chunk, { encoding: "utf8", mode: PRIVATE_FILE_MODE });
     } catch {
       // ignore flush failures during shutdown
     }
