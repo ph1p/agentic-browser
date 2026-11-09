@@ -2307,7 +2307,7 @@ export class ChromeCdpBrowserController implements BrowserController {
         if (result && typeof result === 'object' && typeof result.then === 'function') {
           result = await result;
         }
-        return typeof result === 'string' ? result : JSON.stringify(result);
+        return result === undefined ? 'undefined' : JSON.stringify(result);
       }
       if (payload.action === 'scroll') {
         if (payload.selector) {
@@ -2350,7 +2350,8 @@ export class ChromeCdpBrowserController implements BrowserController {
               ? `(async () => {
   const __agenticResult = await (${scoped.text ?? "undefined"}
   );
-  return typeof __agenticResult === 'string' ? __agenticResult : JSON.stringify(__agenticResult);
+  // Always JSON-encode so strings like "42" or "" survive the round trip as strings.
+  return __agenticResult === undefined ? 'undefined' : JSON.stringify(__agenticResult);
 })()`
               : buildExpression(scoped);
           const result = await evaluateOnPage<string>(client, {
