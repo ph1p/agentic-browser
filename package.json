@@ -24,7 +24,6 @@
   },
   "files": [
     "dist",
-    "extension",
     "AGENTS.md",
     "README.md"
   ],
