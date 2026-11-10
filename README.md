@@ -275,7 +275,7 @@ agentic-browser memory:stats
 
 1. `agent start` — launch Chrome and persist session.
 2. `agent elements` — discover what's on the page.
-3. `agent navigate`, `agent click`, `agent type`, `agent select`, and related typed commands — execute actions using element refs or selectors. Pass `--intent "<task>"` (an `agent`-level option, accepted before or after the subcommand) to group the steps of one task in memory. Consecutive steps with the same intent form one run; a new run replaces the stored recipe, so it always holds the latest run's steps in order.
+3. `agent navigate`, `agent click`, `agent type`, `agent select`, and related typed commands — execute actions using element refs or selectors. Pass `--intent "<task>"` (an `agent`-level option, accepted before or after the subcommand) to group the steps of one task in memory. Later steps without `--intent` join the same run while they stay on its domain; `--intent ""` ends it. A new run replaces the stored recipe, so it always holds the latest run's steps in order.
 4. `agent content` — read page content after actions.
 5. `agent memory-search "<task>"` — matching is fuzzy; results include a `recipe` with the steps that worked last time (`needsInput` marks typed text that was redacted).
 6. `agent stop` — terminate when done.

@@ -388,7 +388,9 @@ export async function agentContent(
     selector: input.selector,
     maxChars: input.maxChars,
   });
-  return { ok: true, action: "content", ...result };
+  // Summary mode carries everything in structuredContent; skip the empty text.
+  const { content, ...rest } = result;
+  return { ok: true, action: "content", ...rest, ...(content ? { content } : {}) };
 }
 
 export async function agentScreenshot(

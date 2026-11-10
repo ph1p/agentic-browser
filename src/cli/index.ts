@@ -40,7 +40,7 @@ const collect = (value: string, previous: string[] = []) => [...previous, value]
 
 const FRAME_HELP = "iframe selector to run in (cross-origin frames supported)";
 const INTENT_HELP =
-  'task this step belongs to, e.g. "log in"; memory groups steps by it (see agent memory-search)';
+  'task this step belongs to, e.g. "log in"; later steps on the same site join it, "" ends it (see agent memory-search)';
 
 /** Resolves `<selector>` or `--text` (substring; `--exact` for exact match) to one locator. */
 function resolveTarget(selector: string | undefined, options: { text?: string; exact?: boolean }) {

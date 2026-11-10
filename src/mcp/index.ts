@@ -90,7 +90,7 @@ const intentParam = z
   .string()
   .optional()
   .describe(
-    'Task this step belongs to, in your own words (e.g. "log in", "search products"). Steps sharing an intent are remembered together and returned as a recipe by browser_search_memory',
+    'Task this step belongs to, in your own words (e.g. "log in", "search products"). Steps sharing an intent are remembered together and returned as a recipe by browser_search_memory. Later steps on the same site without an intent join the task; pass "" to end it',
   );
 
 const server = new McpServer({
