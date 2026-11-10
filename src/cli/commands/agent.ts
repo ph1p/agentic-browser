@@ -431,7 +431,7 @@ export async function agentScreenshot(
 export async function agentElements(
   runtime: Runtime,
   input: {
-    roles?: string[];
+    roles?: InteractiveElementRole[];
     visibleOnly?: boolean;
     limit?: number;
     selector?: string;
@@ -443,7 +443,7 @@ export async function agentElements(
   const sessionId = requireSessionId(runtime);
   await ensureReady(runtime, sessionId);
   const result = await runtime.api.getInteractiveElements(sessionId, {
-    roles: input.roles as InteractiveElementRole[],
+    roles: input.roles,
     visibleOnly: input.visibleOnly,
     limit: input.limit,
     selector: input.selector,

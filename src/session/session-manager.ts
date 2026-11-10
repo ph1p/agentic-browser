@@ -782,6 +782,9 @@ export class SessionManager {
       return { intent, ...ownRun };
     }
     const clears = input.intent !== undefined || input.payload.intent !== undefined;
+    // An ad-hoc eval is a diagnostic, not a task step: it can't be replayed
+    // (the expression is redacted), so it must not join the running recipe.
+    if (input.payload.action === "evaluate" && !clears) return ownRun;
     if (current && !clears && current.domain === domain) return current;
     if (current) this.store.update(sessionId, { intentRun: undefined });
     return ownRun;

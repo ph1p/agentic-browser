@@ -85,16 +85,19 @@ export interface PageContentResult {
   structuredContent?: Record<string, unknown>;
 }
 
-export type InteractiveElementRole =
-  | "link"
-  | "button"
-  | "input"
-  | "select"
-  | "textarea"
-  | "checkbox"
-  | "radio"
-  | "contenteditable"
-  | "custom";
+export const INTERACTIVE_ELEMENT_ROLES = [
+  "link",
+  "button",
+  "input",
+  "select",
+  "textarea",
+  "checkbox",
+  "radio",
+  "contenteditable",
+  "custom",
+] as const;
+
+export type InteractiveElementRole = (typeof INTERACTIVE_ELEMENT_ROLES)[number];
 
 export type ElementAction = "click" | "type" | "select" | "toggle" | "press";
 
@@ -1535,7 +1538,9 @@ export class ChromeCdpBrowserController implements BrowserController {
       ];
 
       if (attempt.headless) {
-        args.push("--headless=new");
+        // Headless defaults to an 800x600 window, which many sites treat as
+        // mobile and collapse controls (e.g. Wikipedia hides its search box).
+        args.push("--headless=new", "--window-size=1366,900");
       }
 
       args.push("about:blank");

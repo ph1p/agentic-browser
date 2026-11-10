@@ -109,6 +109,8 @@ export interface RecipeStepSummary {
   action: string;
   selector?: string;
   url?: string;
+  /** Key for press steps, e.g. "Enter". */
+  key?: string;
   /** Typed text or a selected value was not stored; supply it again on replay. */
   needsInput?: true;
 }
