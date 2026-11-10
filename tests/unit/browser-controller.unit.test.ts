@@ -95,6 +95,34 @@ describe("CdpConnection", () => {
     await expect(sendPromise).rejects.toThrow("CDP connection closed");
     await expect(waitPromise).rejects.toThrow("CDP connection closed");
   });
+
+  it("multiplexes a flattened session over a shared socket", async () => {
+    const ws = new FakeWebSocket();
+    let detached = 0;
+    const conn = new CdpConnection(ws as unknown as WebSocket, {
+      sessionId: "S1",
+      onClose: () => detached++,
+    });
+
+    const result = conn.send<{ value: number }>("Runtime.evaluate", { expression: "1" });
+    expect(JSON.parse(ws.sentPayloads[0]!)).toMatchObject({ id: 1, sessionId: "S1" });
+
+    const events: unknown[] = [];
+    conn.onEvent("Page.loadEventFired", (params) => events.push(params));
+    // Another session's response with the same id and its events are ignored.
+    ws.emitMessage({ id: 1, sessionId: "S2", result: { value: 2 } });
+    ws.emitMessage({ method: "Page.loadEventFired", sessionId: "S2", params: { ts: 2 } });
+    ws.emitMessage({ id: 1, sessionId: "S1", result: { value: 1 } });
+    ws.emitMessage({ method: "Page.loadEventFired", sessionId: "S1", params: { ts: 1 } });
+
+    await expect(result).resolves.toEqual({ value: 1 });
+    expect(events).toEqual([{ ts: 1 }]);
+
+    conn.close();
+    conn.close();
+    expect(detached).toBe(1);
+    expect(ws.readyState).toBe(1); // shared socket stays open
+  });
 });
 
 describe("ChromeCdpBrowserController connection reuse", () => {
