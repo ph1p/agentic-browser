@@ -34,12 +34,13 @@ import { runMemorySearch } from "./commands/memory-search.js";
 import { runMemoryInspect } from "./commands/memory-inspect.js";
 import { runMemoryVerify } from "./commands/memory-verify.js";
 import { runMemoryStats } from "./commands/memory-stats.js";
+import { readPackageVersion } from "../lib/package-version.js";
 
 const collect = (value: string, previous: string[] = []) => [...previous, value];
 
 const FRAME_HELP = "iframe selector to run in (cross-origin frames supported)";
 const INTENT_HELP =
-  'task this step belongs to, e.g. "log in"; memory groups steps by it (see agent memory-search)';
+  'task this step belongs to, e.g. "log in"; later steps on the same site join it, "" ends it (see agent memory-search)';
 
 /** Resolves `<selector>` or `--text` (substring; `--exact` for exact match) to one locator. */
 function resolveTarget(selector: string | undefined, options: { text?: string; exact?: boolean }) {
@@ -58,7 +59,10 @@ type TargetOptions = StepOptions & { text?: string; exact?: boolean };
 async function main() {
   const runtime = createCliRuntime();
   const program = new Command();
-  program.name("agentic-browser").description("Agentic browser CLI");
+  program
+    .name("agentic-browser")
+    .description("Agentic browser CLI")
+    .version(readPackageVersion(), "-v, --version", "print the version");
 
   program
     .command("session:start")

@@ -17,7 +17,8 @@ export interface StoredSessionRecord {
    * The task run in progress: consecutive commands with the same explicit
    * intent share `runId`, so memory can rebuild that task's recipe per run.
    */
-  intentRun?: { intent: string; runId: string };
+  /** Current task run; later steps without an intent join it while on its domain. */
+  intentRun?: { intent: string; runId: string; domain: string };
 }
 
 interface StoreState {

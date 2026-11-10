@@ -1,7 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -12,26 +8,9 @@ import {
   compactMemoryResults,
   compactPageContent,
 } from "./response-helpers.js";
+import { readPackageVersion } from "../lib/package-version.js";
 import { StaleRefError } from "../session/element-refs.js";
 import { createSessionResolver } from "./session-resolver.js";
-
-function readPackageVersion(): string {
-  try {
-    const dir = dirname(fileURLToPath(import.meta.url));
-    // Works from both src/ (dev) and dist/ (built)
-    for (const rel of ["../../package.json", "../package.json"]) {
-      try {
-        const pkg = JSON.parse(readFileSync(join(dir, rel), "utf8")) as { version?: string };
-        if (pkg.version) return pkg.version;
-      } catch {
-        // try next
-      }
-    }
-  } catch {
-    // fallback
-  }
-  return "0.0.0";
-}
 
 function classifyError(message: string): ErrorCode {
   const lower = message.toLowerCase();
@@ -111,7 +90,7 @@ const intentParam = z
   .string()
   .optional()
   .describe(
-    'Task this step belongs to, in your own words (e.g. "log in", "search products"). Steps sharing an intent are remembered together and returned as a recipe by browser_search_memory',
+    'Task this step belongs to, in your own words (e.g. "log in", "search products"). Steps sharing an intent are remembered together and returned as a recipe by browser_search_memory. Later steps on the same site without an intent join the task; pass "" to end it',
   );
 
 const server = new McpServer({

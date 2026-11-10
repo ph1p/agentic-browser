@@ -3081,6 +3081,14 @@ export class ChromeCdpBrowserController implements BrowserController {
           if (selector) return selector;
         }
 
+        // A link's own href is usually unique and survives layout changes,
+        // unlike a structural nth-of-type path (table layouts especially).
+        const href = el.tagName === 'A' ? el.getAttribute('href') : null;
+        if (href && href.length <= 120 && !href.startsWith('javascript:') && href !== '#') {
+          const selector = tryUniqueSelector(root, 'a[href="' + escapeAttr(href) + '"]');
+          if (selector) return selector;
+        }
+
         const parts = [];
         let current = el;
         while (current && current.nodeType === 1) {
@@ -3245,6 +3253,13 @@ ${IN_PAGE_IS_VISIBLE}
         if (placeholder) return placeholder.slice(0, 80);
         const alt = el.getAttribute('alt');
         if (alt) return alt.slice(0, 80);
+        // Icon-only controls: name them by the icon's label.
+        const icon = el.querySelector('[aria-label], [title], img[alt]');
+        if (icon) {
+          const label =
+            icon.getAttribute('aria-label') || icon.getAttribute('title') || icon.getAttribute('alt');
+          if (label) return label.trim().slice(0, 80);
+        }
         return '';
       }
 
@@ -3327,12 +3342,45 @@ ${IN_PAGE_IS_VISIBLE}
         regionMemo.set(el, flags);
         return flags;
       }
+      // Pages without landmarks (table layouts, old sites) still have a top
+      // bar of site links: the first row near the top holding several links.
+      // Its bottom edge is cached per document; elements above it are chrome.
+      const headerBottomMemo = new Map();
+      function headerBarBottom(doc) {
+        let bottom = headerBottomMemo.get(doc);
+        if (bottom !== undefined) return bottom;
+        bottom = 0;
+        if (!doc.querySelector('main, [role="main"], article, header, nav, [role="banner"], [role="navigation"]')) {
+          const view = doc.defaultView || window;
+          const rows = new Map();
+          for (const link of doc.querySelectorAll('a[href], button')) {
+            const rect = link.getBoundingClientRect();
+            const top = Math.round(rect.top + view.scrollY);
+            if (top > 200 || rect.width === 0) continue;
+            const row = rows.get(top) || { count: 0, bottom: 0 };
+            row.count++;
+            row.bottom = Math.max(row.bottom, rect.bottom + view.scrollY);
+            rows.set(top, row);
+          }
+          const firstDense = [...rows.entries()].sort((a, b) => a[0] - b[0]).find(([, row]) => row.count >= 4);
+          if (firstDense) bottom = firstDense[1].bottom;
+        }
+        headerBottomMemo.set(doc, bottom);
+        return bottom;
+      }
+      function inHeaderBar(el) {
+        const bottom = headerBarBottom(el.ownerDocument);
+        if (!bottom) return false;
+        const view = el.ownerDocument.defaultView || window;
+        return el.getBoundingClientRect().top + view.scrollY < bottom;
+      }
       function rankElement(el, visible) {
         if (!visible) return 3;
         const flags = regionFlags(el);
         if (flags & FOOTER) return 2;
         if (flags & MAIN) return 0;
         if (flags & CHROME) return 2;
+        if (inHeaderBar(el)) return 2;
         return 1;
       }
 

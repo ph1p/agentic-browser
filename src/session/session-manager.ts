@@ -158,7 +158,7 @@ export class SessionManager {
       rawInput.type === "interact"
         ? { ...rawInput, payload: await this.resolveRef(record, rawInput.payload) }
         : rawInput;
-    const runId = this.trackIntentRun(sessionId, record, input);
+    const run = this.trackIntentRun(sessionId, record, input);
 
     const command: Command = {
       commandId: input.commandId,
@@ -170,7 +170,7 @@ export class SessionManager {
 
     let resultMessage = "";
     let resultStatus: Command["resultStatus"] = "success";
-    const memoryContext = this.buildMemoryContext(record, input);
+    const memoryContext = this.buildMemoryContext(record, input, run.intent);
     const topInsight = this.ctx.memoryService
       .search({
         taskIntent: memoryContext.taskIntent,
@@ -250,7 +250,7 @@ export class SessionManager {
         step: memoryContext.step,
         selector: memoryContext.selector,
         url: memoryContext.url,
-        runId,
+        runId: run.runId,
       });
     } else {
       this.ctx.memoryService.recordFailure(
@@ -687,6 +687,7 @@ export class SessionManager {
   private buildMemoryContext(
     record: StoredSessionRecord,
     input: ExecuteCommandInput,
+    runIntent: string | undefined,
   ): {
     taskIntent: string;
     siteDomain: string;
@@ -708,7 +709,7 @@ export class SessionManager {
         : input.type === "interact"
           ? `interact:${action ?? "action"}:${parsed.domain}`
           : `${input.type}:${parsed.domain}`;
-    const taskIntent = explicitIntent(input) ?? defaultIntent;
+    const taskIntent = runIntent ?? defaultIntent;
     const expectedOutcome =
       typeof input.payload.expectedOutcome === "string" && input.payload.expectedOutcome.trim()
         ? input.payload.expectedOutcome
@@ -758,19 +759,32 @@ export class SessionManager {
   }
 
   /**
-   * Consecutive commands with the same explicit intent form one run; any other
-   * command ends it. Commands without an intent are each their own run.
+   * An intent starts a run (or continues it, if it is the current one). Later
+   * commands without an intent join the run while they stay on its domain, so
+   * callers need not repeat the intent on every step. An empty intent, or a
+   * command on another domain, ends the run; such commands are their own run.
    */
   private trackIntentRun(
     sessionId: string,
     record: StoredSessionRecord,
     input: ExecuteCommandInput,
-  ): string {
+  ): { intent?: string; runId: string } {
+    const current = record.intentRun;
     const intent = explicitIntent(input);
-    if (intent && record.intentRun?.intent === intent) return record.intentRun.runId;
-    const intentRun = intent ? { intent, runId: input.commandId } : undefined;
-    if (intentRun || record.intentRun) this.store.update(sessionId, { intentRun });
-    return input.commandId;
+    const domain = this.parseUrl(
+      typeof input.payload.url === "string" ? input.payload.url : record.lastUrl,
+    ).domain;
+    const ownRun = { runId: input.commandId };
+
+    if (intent) {
+      if (current?.intent === intent) return current;
+      this.store.update(sessionId, { intentRun: { intent, runId: input.commandId, domain } });
+      return { intent, ...ownRun };
+    }
+    const clears = input.intent !== undefined || input.payload.intent !== undefined;
+    if (current && !clears && current.domain === domain) return current;
+    if (current) this.store.update(sessionId, { intentRun: undefined });
+    return ownRun;
   }
 
   private parseUrl(rawUrl?: string): { domain: string; pathPattern: string } {

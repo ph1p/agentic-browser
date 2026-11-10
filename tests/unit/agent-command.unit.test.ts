@@ -9,6 +9,7 @@ import {
   agentElements,
   agentEval,
   agentInteract,
+  agentMemorySearch,
   agentNavigate,
   agentScreenshot,
   agentStart,
@@ -271,6 +272,35 @@ describe("agent commands", () => {
     await expect(agentInteract(runtime, { action: "click", selector: "@e1" })).rejects.toThrow(
       'Unknown or stale ref "@e1"',
     );
+  });
+
+  it("later steps without an intent join the run until the domain changes", async () => {
+    const { runtime } = makeRecordingRuntime();
+    await agentStart(runtime);
+    await agentNavigate(runtime, { url: "https://example.com", intent: "open menu" });
+    await agentInteract(runtime, { action: "click", selector: "#menu" });
+    await agentInteract(runtime, { action: "click", selector: "#item" });
+    await agentNavigate(runtime, { url: "https://other.org" });
+    await agentInteract(runtime, { action: "click", selector: "#elsewhere" });
+
+    const search = await agentMemorySearch(runtime, { taskIntent: "open menu" });
+    const run = search.results.find((r) => r.taskIntent === "open menu");
+    expect(run?.recipe.map((step) => step.selector ?? step.action)).toEqual([
+      "navigate",
+      "#menu",
+      "#item",
+    ]);
+  });
+
+  it("an empty intent ends the run", async () => {
+    const { runtime } = makeRecordingRuntime();
+    await agentStart(runtime);
+    await agentNavigate(runtime, { url: "https://example.com", intent: "open menu" });
+    await agentInteract(runtime, { action: "click", selector: "#menu", intent: "" });
+
+    const search = await agentMemorySearch(runtime, { taskIntent: "open menu" });
+    const run = search.results.find((r) => r.taskIntent === "open menu");
+    expect(run?.recipe).toHaveLength(1);
   });
 
   it("matchesUrlPattern supports substring, glob and regex", () => {
