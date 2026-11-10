@@ -3245,6 +3245,13 @@ ${IN_PAGE_IS_VISIBLE}
         if (placeholder) return placeholder.slice(0, 80);
         const alt = el.getAttribute('alt');
         if (alt) return alt.slice(0, 80);
+        // Icon-only controls: name them by the icon's label.
+        const icon = el.querySelector('[aria-label], [title], img[alt]');
+        if (icon) {
+          const label =
+            icon.getAttribute('aria-label') || icon.getAttribute('title') || icon.getAttribute('alt');
+          if (label) return label.trim().slice(0, 80);
+        }
         return '';
       }
 
