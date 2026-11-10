@@ -55,6 +55,8 @@ agentic-browser agent start --cdp-url http://127.0.0.1:9222
 
 Chrome may ask you to allow the connection. In this mode Chrome serves only the browser-level WebSocket (no `/json/*` HTTP endpoints); agentic-browser finds it through the `DevToolsActivePort` file in your Chrome profile directory and attaches to its tab over that socket.
 
+Chrome asks for approval on every new DevTools connection, and each CLI command is a new process. To avoid a prompt per command, agentic-browser starts a small background relay that holds one approved connection and shares it with later commands. Approve the prompt once; the relay exits after 10 minutes without clients (`AGENTIC_BROWSER_RELAY_IDLE_MS`; `0` keeps it running until Chrome closes). Its socket and log live in `$TMPDIR/agentic-browser-<uid>/`. Set `AGENTIC_BROWSER_RELAY=0` to connect directly instead (not available on Windows).
+
 agentic-browser opens its own tab and leaves your other tabs alone. Stopping the session closes only that tab, **not** your Chrome.
 
 **Older Chrome or a separate profile:** relaunch Chrome with a debugging port and a dedicated profile, then connect the same way. Since Chrome 136, `--remote-debugging-port` is ignored for the default profile directory, so `--user-data-dir` is required:
@@ -101,6 +103,7 @@ These options can also be set via environment variables (CLI flags take preceden
 | `AGENTIC_BROWSER_USER_PROFILE` | `default` or an absolute path | Launch with a real profile      |
 | `AGENTIC_BROWSER_HEADLESS`     | `true`                        | Run Chrome in headless mode     |
 | `AGENTIC_BROWSER_USER_AGENT`   | `MyBot/1.0`                   | Override the browser user-agent |
+| `AGENTIC_BROWSER_RELAY`        | `0`                           | Disable the CDP relay daemon    |
 
 ## Agent Commands (Recommended for LLMs)
 

@@ -39,7 +39,7 @@ Every command prints exactly one JSON line to stdout.
 
 ### Use your existing Chrome
 
-Want your logged-in sessions and cookies? On Chrome 144+, open `chrome://inspect/#remote-debugging`, enable remote debugging, and connect with `agentic-browser agent start --cdp-url http://127.0.0.1:9222`. Chrome may ask you to allow the connection.
+Want your logged-in sessions and cookies? On Chrome 144+, open `chrome://inspect/#remote-debugging`, enable remote debugging, and connect with `agentic-browser agent start --cdp-url http://127.0.0.1:9222`. Chrome asks you to allow the connection once; a background relay keeps that approved connection for later commands and exits after 10 idle minutes.
 
 On older Chrome, launch it with remote debugging and a dedicated profile, then connect:
 
@@ -145,6 +145,8 @@ await core.stopSession(session.sessionId);
 | `AGENTIC_BROWSER_HEADLESS`               |                      | Run Chrome in headless mode (`true` or `1`)                         |
 | `AGENTIC_BROWSER_USER_AGENT`             |                      | Override the browser user-agent string                              |
 | `AGENTIC_BROWSER_ALLOW_FILE_URLS`        |                      | Allow navigating to `file:` URLs (`true` or `1`); off by default    |
+| `AGENTIC_BROWSER_RELAY`                  | _(on)_               | `0`/`false` disables the CDP relay for chrome://inspect mode        |
+| `AGENTIC_BROWSER_RELAY_IDLE_MS`          | `600000`             | Relay exits after this many ms without clients; `0` = never         |
 
 ## Anti-Detection
 

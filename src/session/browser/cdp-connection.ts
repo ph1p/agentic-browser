@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import { resolveBrowserWsUrl, targetIdOf } from "./browser-endpoint.js";
+import { ensureRelay } from "./relay-client.js";
 
 export interface CdpTarget {
   id: string;
@@ -163,7 +164,11 @@ export class CdpConnection implements CdpClient {
       created.conn = (async () => {
         const endpoint = await resolveBrowserWsUrl(hostPort);
         if (!endpoint) throw new Error(`No browser DevTools endpoint found for ${hostPort}`);
-        const conn = await CdpConnection.open(endpoint.url);
+        // Approval-gated endpoints go through the shared relay daemon, so the
+        // user approves once per relay instead of once per process.
+        const relayUrl =
+          endpoint.source === "active-port" ? await ensureRelay(endpoint.url) : undefined;
+        const conn = await CdpConnection.open(relayUrl ?? endpoint.url);
         conn.ws.setMaxListeners(0); // one listener set per attached page session
         conn.ws.once("close", forget);
         return conn;

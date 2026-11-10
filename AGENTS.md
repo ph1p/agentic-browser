@@ -116,6 +116,8 @@ AgenticBrowserCore → ControlApi → SessionManager → BrowserController (CDP)
 - `AGENTIC_BROWSER_CHROME_PATH` — alias of `AGENTIC_BROWSER_CHROME_EXECUTABLE_PATH`
 - `AGENTIC_BROWSER_HEADLESS` — `true` or `1` to launch Chrome headless
 - `AGENTIC_BROWSER_USER_AGENT` — override the browser user agent
+- `AGENTIC_BROWSER_RELAY` — `0`/`false` disables the CDP relay daemon (`src/relay/`), used only for chrome://inspect-mode Chrome (DevToolsActivePort, approval prompt per connection)
+- `AGENTIC_BROWSER_RELAY_IDLE_MS` — relay idle exit (default 600000; `0`/`never` = no idle exit); socket + log in `$TMPDIR/agentic-browser-<uid>/`
 
 ## MCP Server
 
