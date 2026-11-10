@@ -44,7 +44,7 @@ Add to `.cursor/mcp.json` in your project root:
 
 ### Use your existing Chrome
 
-To control a Chrome you already have open (with all your sessions and cookies), launch Chrome with `--remote-debugging-port=9222` and add `AGENTIC_BROWSER_CDP_URL` to your MCP config:
+To control a Chrome you already have open (with all your sessions and cookies), launch Chrome with `--remote-debugging-port=9222 --user-data-dir=<dir>` (Chrome 136+ ignores the port on the default profile) and add `AGENTIC_BROWSER_CDP_URL` to your MCP config:
 
 ```json
 {

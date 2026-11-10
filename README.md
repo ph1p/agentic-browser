@@ -43,22 +43,9 @@ By default, agentic-browser launches a fresh Chrome with a throwaway profile. If
 
 ### Option 1: Control your running Chrome (recommended)
 
-This lets agentic-browser take over your already-open Chrome — no need to quit it, no need to log in again.
+This lets agentic-browser use your already-open Chrome — no need to quit it, no need to log in again. Requires Chrome 144+.
 
-**Step 1.** Quit Chrome, then relaunch it with remote debugging enabled:
-
-```bash
-# macOS
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
-
-# Linux
-google-chrome --remote-debugging-port=9222
-
-# Windows
-chrome.exe --remote-debugging-port=9222
-```
-
-Chrome opens normally with all your tabs, extensions, and sessions intact.
+**Step 1.** In Chrome, open `chrome://inspect/#remote-debugging` and enable remote debugging. The page shows the server address, usually `127.0.0.1:9222`.
 
 **Step 2.** Connect agentic-browser:
 
@@ -66,7 +53,22 @@ Chrome opens normally with all your tabs, extensions, and sessions intact.
 agentic-browser agent start --cdp-url http://127.0.0.1:9222
 ```
 
-Stopping the session will **not** close your Chrome.
+Chrome may ask you to allow the connection. In this mode Chrome serves only the browser-level WebSocket (no `/json/*` HTTP endpoints); agentic-browser finds it through the `DevToolsActivePort` file in your Chrome profile directory and attaches to its tab over that socket.
+
+agentic-browser opens its own tab and leaves your other tabs alone. Stopping the session closes only that tab, **not** your Chrome.
+
+**Older Chrome or a separate profile:** relaunch Chrome with a debugging port and a dedicated profile, then connect the same way. Since Chrome 136, `--remote-debugging-port` is ignored for the default profile directory, so `--user-data-dir` is required:
+
+```bash
+# macOS
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.chrome-agent"
+
+# Linux
+google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.chrome-agent"
+
+# Windows
+chrome.exe --remote-debugging-port=9222 --user-data-dir="%USERPROFILE%\.chrome-agent"
+```
 
 ### Option 2: Launch a new Chrome with your profile
 
@@ -325,7 +327,7 @@ await core.stopSession(session.sessionId);
 ### Connect to your running Chrome
 
 ```ts
-// Chrome must be running with --remote-debugging-port=9222
+// Chrome must be running with --remote-debugging-port=9222 --user-data-dir=<dir>
 const core = createAgenticBrowserCore({
   env: { ...process.env, AGENTIC_BROWSER_CDP_URL: "http://127.0.0.1:9222" },
 });
