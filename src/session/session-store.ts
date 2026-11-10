@@ -14,10 +14,10 @@ export interface StoredSessionRecord {
   /** Element refs from the last element listing. */
   refs?: StoredRefs;
   /**
-   * The task run in progress: consecutive commands with the same explicit
-   * intent share `runId`, so memory can rebuild that task's recipe per run.
+   * The task run in progress. Steps of one run share `runId`, so memory can
+   * rebuild that task's recipe; later steps without an intent join it while
+   * on its domain.
    */
-  /** Current task run; later steps without an intent join it while on its domain. */
   intentRun?: { intent: string; runId: string; domain: string };
 }
 

@@ -1,7 +1,4 @@
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
-import { URL } from "node:url";
 
 import type { AppContext } from "../cli/app.js";
 import {
@@ -24,6 +21,15 @@ import {
 import { assignRefs, REF_PATTERN, StaleRefError } from "./element-refs.js";
 import { SessionStore, type StoredSessionRecord } from "./session-store.js";
 import { assertNavigableUrl } from "./url-policy.js";
+import { parseUrl } from "./memory-url.js";
+import {
+  cleanupSessions,
+  isSessionAlive,
+  type CleanupInput,
+  type CleanupResult,
+} from "./session-maintenance.js";
+
+export type { CleanupResult } from "./session-maintenance.js";
 import type { TaskStep } from "../memory/memory-schemas.js";
 import { redactStepPayload } from "../memory/redact-step-payload.js";
 
@@ -37,18 +43,6 @@ interface ExecuteCommandInput {
   payload: Record<string, unknown>;
   /** Task this step belongs to (e.g. "log in"); memory groups steps by it. */
   intent?: string;
-}
-
-interface CleanupInput {
-  maxAgeDays?: number;
-  dryRun?: boolean;
-}
-
-export interface CleanupResult {
-  removedSessionIds: string[];
-  removedProfileDirs: string[];
-  keptActiveSessionId?: string;
-  dryRun: boolean;
 }
 
 export class SessionManager {
@@ -70,7 +64,7 @@ export class SessionManager {
     const active = this.store.getActive();
     if (active && active.session.status !== "terminated") {
       // Check if the existing session is still alive
-      if (await this.isSessionAlive(active)) {
+      if (await isSessionAlive(this.browser, active)) {
         // Return the healthy existing session instead of throwing
         return active.session;
       }
@@ -122,7 +116,7 @@ export class SessionManager {
 
     // Already ready — quick-verify the connection is alive
     if (record.session.status === "ready") {
-      if (await this.isSessionAlive(record)) {
+      if (await isSessionAlive(this.browser, record)) {
         return record;
       }
       // Connection died silently — mark failed and fall through to recovery
@@ -282,7 +276,7 @@ export class SessionManager {
         landmarks?: Array<{ role?: string } | string>;
       };
       const url = typeof sc.url === "string" ? sc.url : record.lastUrl;
-      const parsed = this.parseUrl(url);
+      const parsed = parseUrl(url);
       const headingTexts = (sc.headings ?? []).map((h) =>
         typeof h === "string" ? h : (h.text ?? ""),
       );
@@ -381,7 +375,7 @@ export class SessionManager {
     const record = await this.ensureSession(sessionId);
     const result = await this.browser.dismissCookieBanner(record.targetWsUrl);
 
-    const parsed = this.parseUrl(record.lastUrl);
+    const parsed = parseUrl(record.lastUrl);
     this.ctx.memoryService.updateProfileCookieBanner(parsed.domain, result);
 
     return result;
@@ -418,6 +412,11 @@ export class SessionManager {
         } catch {
           // ignore close failures
         }
+      }
+      if (record.pid === 0) {
+        // Connected to the user's own browser: close only the tab we opened.
+        const tabId = record.targetWsUrl.split("/").pop();
+        if (tabId) await this.browser.closeTab(record.cdpUrl, tabId).catch(() => undefined);
       }
       this.browser.terminate(record.pid);
       this.ctx.tokenService.revoke(sessionId);
@@ -527,98 +526,11 @@ export class SessionManager {
     return this.ctx.memoryService.stats();
   }
 
-  cleanupSessions(input: CleanupInput): CleanupResult {
-    const maxAgeDays = input.maxAgeDays ?? 7;
-    if (!Number.isFinite(maxAgeDays) || maxAgeDays < 0) {
-      throw new Error("maxAgeDays must be a non-negative number");
-    }
-
-    const dryRun = input.dryRun ?? false;
-    const now = Date.now();
-    const cutoffMs = now - maxAgeDays * 24 * 60 * 60 * 1000;
-    const active = this.store.getActive();
-    const all = this.store.list();
-
-    const removedSessionIds: string[] = [];
-    const keep: StoredSessionRecord[] = [];
-
-    for (const record of all) {
-      const isActive = active?.session.sessionId === record.session.sessionId;
-      if (isActive) {
-        keep.push(record);
-        continue;
-      }
-
-      if (record.session.status !== "terminated") {
-        keep.push(record);
-        continue;
-      }
-
-      const endedAt = record.session.endedAt ? Date.parse(record.session.endedAt) : Number.NaN;
-      if (Number.isNaN(endedAt) || endedAt > cutoffMs) {
-        keep.push(record);
-        continue;
-      }
-
-      removedSessionIds.push(record.session.sessionId);
-    }
-
-    const keepIds = new Set(keep.map((record) => record.session.sessionId));
-    const profilesDir = path.join(this.ctx.config.dataDir, "profiles");
-    const removedProfileDirs: string[] = [];
-
-    if (fs.existsSync(profilesDir)) {
-      for (const entry of fs.readdirSync(profilesDir)) {
-        const fullPath = path.join(profilesDir, entry);
-        if (!fs.statSync(fullPath).isDirectory()) {
-          continue;
-        }
-        if (keepIds.has(entry)) {
-          continue;
-        }
-        removedProfileDirs.push(fullPath);
-      }
-    }
-
-    if (!dryRun) {
-      this.store.replaceSessions(keep, active?.session.sessionId);
-      for (const profilePath of removedProfileDirs) {
-        fs.rmSync(profilePath, { recursive: true, force: true });
-      }
-    }
-
-    return {
-      removedSessionIds,
-      removedProfileDirs,
-      keptActiveSessionId: active?.session.sessionId,
-      dryRun,
-    };
-  }
-
-  /** Quick health check — probe the CDP connection with a lightweight evaluate. */
-  private async isSessionAlive(record: StoredSessionRecord): Promise<boolean> {
-    if (!record.targetWsUrl) return false;
-    if (record.pid > 0) {
-      try {
-        process.kill(record.pid, 0); // signal 0 = existence check
-      } catch (err: unknown) {
-        // EPERM means the process exists but we can't signal it — still alive
-        if ((err as NodeJS.ErrnoException).code === "EPERM") {
-          // fall through to CDP check
-        } else {
-          return false; // ESRCH = process is gone
-        }
-      }
-    }
-    try {
-      await this.browser.getContent(record.targetWsUrl, { mode: "title" });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   /** Force-terminate a session record, cleaning up process, connection, and store. */
+  cleanupSessions(input: CleanupInput): CleanupResult {
+    return cleanupSessions(this.store, this.ctx.config.dataDir, input);
+  }
+
   private async forceTerminate(record: StoredSessionRecord): Promise<void> {
     const { sessionId } = record.session;
     if (this.browser.closeConnection) {
@@ -700,7 +612,7 @@ export class SessionManager {
     const selector =
       typeof input.payload.selector === "string" ? input.payload.selector : undefined;
     const inputUrl = typeof input.payload.url === "string" ? input.payload.url : record.lastUrl;
-    const parsed = this.parseUrl(inputUrl);
+    const parsed = parseUrl(inputUrl);
     const action = typeof input.payload.action === "string" ? input.payload.action : undefined;
 
     const defaultIntent =
@@ -771,7 +683,7 @@ export class SessionManager {
   ): { intent?: string; runId: string } {
     const current = record.intentRun;
     const intent = explicitIntent(input);
-    const domain = this.parseUrl(
+    const domain = parseUrl(
       typeof input.payload.url === "string" ? input.payload.url : record.lastUrl,
     ).domain;
     const ownRun = { runId: input.commandId };
@@ -788,22 +700,6 @@ export class SessionManager {
     if (current && !clears && current.domain === domain) return current;
     if (current) this.store.update(sessionId, { intentRun: undefined });
     return ownRun;
-  }
-
-  private parseUrl(rawUrl?: string): { domain: string; pathPattern: string } {
-    if (!rawUrl) {
-      return { domain: "unknown", pathPattern: "/" };
-    }
-    try {
-      const parsed = new URL(rawUrl);
-      const firstSegment = parsed.pathname.split("/").filter(Boolean)[0];
-      const pathPattern = firstSegment ? `/${firstSegment}/*` : "/";
-      // file: and about: URLs have no hostname; memory needs a non-empty domain.
-      const domain = parsed.hostname.toLowerCase() || parsed.protocol.replace(/:$/, "");
-      return { domain, pathPattern };
-    } catch {
-      return { domain: "unknown", pathPattern: "/" };
-    }
   }
 }
 

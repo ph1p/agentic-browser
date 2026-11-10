@@ -39,18 +39,20 @@ Every command prints exactly one JSON line to stdout.
 
 ### Use your existing Chrome
 
-Want your logged-in sessions, cookies, and extensions? Quit Chrome, relaunch it with remote debugging, and connect:
+Want your logged-in sessions and cookies? On Chrome 144+, open `chrome://inspect/#remote-debugging`, enable remote debugging, and connect with `agentic-browser agent start --cdp-url http://127.0.0.1:9222`. Chrome asks you to allow the connection once; a background relay keeps that approved connection for later commands and exits after 10 idle minutes.
+
+On older Chrome, launch it with remote debugging and a dedicated profile, then connect:
 
 ```bash
 # 1. Quit Chrome, then relaunch with debugging enabled
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
-# (Linux: google-chrome --remote-debugging-port=9222)
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.chrome-agent"
+# (Linux: google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.chrome-agent")
 
 # 2. Connect agentic-browser to it
 agentic-browser agent start --cdp-url http://127.0.0.1:9222
 ```
 
-Chrome opens normally with all your tabs and sessions. Stopping the agent will **not** close your Chrome.
+Since Chrome 136, `--remote-debugging-port` is ignored for the default profile, so `--user-data-dir` is required. Log in once in that window; the profile keeps the sessions. agentic-browser opens its own tab, and stopping the agent closes only that tab, **not** your Chrome.
 
 Alternatively, launch a new Chrome with your default profile (requires quitting Chrome first):
 
@@ -143,6 +145,8 @@ await core.stopSession(session.sessionId);
 | `AGENTIC_BROWSER_HEADLESS`               |                      | Run Chrome in headless mode (`true` or `1`)                         |
 | `AGENTIC_BROWSER_USER_AGENT`             |                      | Override the browser user-agent string                              |
 | `AGENTIC_BROWSER_ALLOW_FILE_URLS`        |                      | Allow navigating to `file:` URLs (`true` or `1`); off by default    |
+| `AGENTIC_BROWSER_RELAY`                  | _(on)_               | `0`/`false` disables the CDP relay for chrome://inspect mode        |
+| `AGENTIC_BROWSER_RELAY_IDLE_MS`          | `600000`             | Relay exits after this many ms without clients; `0` = never         |
 
 ## Anti-Detection
 
