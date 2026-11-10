@@ -303,6 +303,21 @@ describe("agent commands", () => {
     expect(run?.recipe).toHaveLength(1);
   });
 
+  it("evals stay out of the run; press keeps its key", async () => {
+    const { runtime } = makeRecordingRuntime();
+    await agentStart(runtime);
+    await agentNavigate(runtime, { url: "https://example.com", intent: "search" });
+    await agentEval(runtime, { expression: "innerWidth" });
+    await agentInteract(runtime, { action: "press", key: "Enter" });
+
+    const search = await agentMemorySearch(runtime, { taskIntent: "search" });
+    const run = search.results.find((r) => r.taskIntent === "search");
+    expect(run?.recipe).toEqual([
+      { action: "navigate", url: "https://example.com/" },
+      { action: "press", key: "Enter" },
+    ]);
+  });
+
   it("matchesUrlPattern supports substring, glob and regex", () => {
     expect(matchesUrlPattern("https://a.com/x/y", "/x/")).toBe(true);
     expect(matchesUrlPattern("https://a.com/x/y", "https://a.com/*")).toBe(true);

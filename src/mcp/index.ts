@@ -2,7 +2,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { createAgenticBrowserCore, type AgenticBrowserCore } from "../cli/runtime.js";
-import type { ErrorCode, InteractiveElementRole } from "../session/browser-controller.js";
+import {
+  INTERACTIVE_ELEMENT_ROLES,
+  type ErrorCode,
+  type InteractiveElementRole,
+} from "../session/browser-controller.js";
 import {
   compactInteractiveElementsResult,
   compactMemoryResults,
@@ -349,19 +353,7 @@ server.tool(
   'Discover interactive elements on the current page (buttons, links, inputs, etc.). Each element gets a short ref like "e1" — pass that ref to browser_interact to act on it, the way you would point at something you see rather than describing its markup. Refs stay valid until the next browser_get_elements call or the next page-changing interaction. Actions per role: link/button/custom→click, input/textarea/contenteditable→click+type+press, select→click+select, checkbox/radio→toggle. A session is auto-started if needed.',
   {
     roles: z
-      .array(
-        z.enum([
-          "link",
-          "button",
-          "input",
-          "select",
-          "textarea",
-          "checkbox",
-          "radio",
-          "contenteditable",
-          "custom",
-        ]),
-      )
+      .array(z.enum(INTERACTIVE_ELEMENT_ROLES))
       .optional()
       .describe("Filter by element roles (omit for all)"),
     visibleOnly: z.boolean().default(true).describe("Only return visible elements"),

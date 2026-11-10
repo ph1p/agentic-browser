@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 
 import { createCliRuntime } from "./runtime.js";
 import {
@@ -35,6 +35,25 @@ import { runMemoryInspect } from "./commands/memory-inspect.js";
 import { runMemoryVerify } from "./commands/memory-verify.js";
 import { runMemoryStats } from "./commands/memory-stats.js";
 import { readPackageVersion } from "../lib/package-version.js";
+import {
+  INTERACTIVE_ELEMENT_ROLES,
+  type InteractiveElementRole,
+} from "../session/browser-controller.js";
+
+function parseRoles(value: string): InteractiveElementRole[] {
+  const roles = value
+    .split(",")
+    .map((r) => r.trim().toLowerCase())
+    .filter(Boolean);
+  const valid: readonly string[] = INTERACTIVE_ELEMENT_ROLES;
+  const unknown = roles.filter((r) => !valid.includes(r));
+  if (unknown.length > 0) {
+    throw new InvalidArgumentError(
+      `unknown role(s) ${unknown.join(", ")}; valid: ${INTERACTIVE_ELEMENT_ROLES.join(", ")}`,
+    );
+  }
+  return roles as InteractiveElementRole[];
+}
 
 const collect = (value: string, previous: string[] = []) => [...previous, value];
 
@@ -581,7 +600,11 @@ async function main() {
   agent
     .command("elements")
     .description("List interactive elements on the current page")
-    .option("--roles <roles>", "comma-separated roles filter", (v) => v.split(","))
+    .option(
+      "--roles <roles>",
+      `comma-separated roles: ${INTERACTIVE_ELEMENT_ROLES.join("|")}`,
+      parseRoles,
+    )
     .option("--visible-only", "only visible elements", true)
     .option("--no-visible-only", "include hidden elements")
     .option("--limit <n>", "max elements", "50")
@@ -591,7 +614,7 @@ async function main() {
     .option("--frame <selector>", FRAME_HELP)
     .action(
       async (options: {
-        roles?: string[];
+        roles?: InteractiveElementRole[];
         visibleOnly: boolean;
         limit: string;
         selector?: string;

@@ -78,6 +78,7 @@ function buildRecipe(insight: TaskInsight): RecipeStepSummary[] {
     const summary: RecipeStepSummary = { action };
     if (step.selector) summary.selector = step.selector;
     if (typeof payload.url === "string") summary.url = payload.url;
+    if (typeof payload.key === "string") summary.key = payload.key;
     if (payload.redacted === true) summary.needsInput = true;
     return summary;
   });
